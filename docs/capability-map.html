@@ -97,7 +97,7 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.92em}
   <p class="sub">No existing plugin closed the two hard gaps, so the useful ideas were taken and the risky implementations were not. <code>dsh-agent-mailbox</code> is the last row of the matrix above.</p>
   <div class="built">
     <h3>dsh-agent-mailbox</h3>
-    <p>MIT &middot; zero runtime dependencies &middot; no build step &middot; 157 unit tests &middot; 34 live checks against a running instance</p>
+    <p>MIT &middot; zero runtime dependencies &middot; no build step &middot; 197 unit tests &middot; 42 live checks against a running instance &middot; <a href="https://github.com/blairlaird/dsh-agent-mailbox">source</a></p>
     <dl class="kv">
       <dt>closes</dt><dd>search (0/23 had it) and MCP clients as peers (0/23)</dd>
       <dt>transports</dt><dd>HTTP/JSON-RPC, SSE stream, long-poll, in-process DSH commands, A2A agent card</dd>
@@ -105,9 +105,48 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.92em}
       <dt>integrity</dt><dd>HMAC signing, redaction on ingest, bearer identity, stated trust boundary</dd>
       <dt>wake</dt><dd><code>mailbox_wait</code> for loop-driven clients; <code>notifyCommand</code> for turn-based ones</dd>
       <dt>credit</dt><dd>heartbeat registry, atomic writes and the trust-section idea from dsh-crosstalk (MIT)</dd>
+      <dt>audited</dt><dd>40-agent adversarial review, 32 findings confirmed and fixed &mdash; see below</dd>
     </dl>
   </div>
   <p class="sub" style="margin-top:20px">Deliberately absent, with reasons: WebSocket (SSE covers push), MQTT bridge (<code>dsh-mqtt</code> exists), work queues (reads never consume, by design), typing indicators (meaningless between agents), end-to-end encryption (the log&rsquo;s value is that a human can read it), and rate limiting.</p>
+</section>
+
+<section>
+  <h2>What the independent audit found</h2>
+  <p class="sub">Building against a capability matrix tells you what to <em>write</em>. It does not tell you whether what you wrote is safe, so the finished plugin went through a 40-agent adversarial review, separate from the review that shaped its design. It confirmed <b>32 findings</b>. All are fixed and pinned by tests.</p>
+  <div class="gap">
+    <div class="card none">
+      <span class="tag">reachable with no credential</span>
+      <h3>GET /stream served before auth</h3>
+      <p><code>POST /mcp</code> refused unauthorized callers correctly. The GET routes, written later as &ldquo;just a read&rdquo;, never touched the auth layer and returned the whole log to anyone who asked. Gating them was half the fix &mdash; a caller holding a <em>valid</em> token could still read another participant&rsquo;s mail with <code>?to=</code>. The addressee is now derived from the resolved identity.</p>
+    </div>
+    <div class="card none">
+      <span class="tag">reachable with no credential</span>
+      <h3>?port= inside the A2A card</h3>
+      <p><code>?port=4470@evil.example</code> moved the agent card&rsquo;s advertised origin to <code>evil.example</code>: WHATWG URL parsing reads <code>127.0.0.1:4470</code> as userinfo. The card is now built from the port actually being listened on.</p>
+    </div>
+    <div class="card part">
+      <span class="tag">documented, not running</span>
+      <h3>Signing and retention were decoration</h3>
+      <p><code>signingSecret</code> and <code>maxRecords</code> were accepted in config and dropped. Signing covered only <code>message</code> records, leaving edit and withdraw &mdash; the two records that <em>rewrite</em> a message &mdash; outside the signature. Nothing ever verified a signature. Both features are real now, and <code>/health</code> reports the verification result.</p>
+    </div>
+    <div class="card part">
+      <span class="tag">tamper path</span>
+      <h3>The fold trusted the file</h3>
+      <p><code>edit()</code> and <code>withdraw()</code> check authorship at write time; the read-time fold did not. One appended line could retarget anyone&rsquo;s message. Write-time checks guard the process; the fold guards the file, and both are needed.</p>
+    </div>
+    <div class="card part">
+      <span class="tag">availability</span>
+      <h3>Unbounded everything</h3>
+      <p>Request bodies buffered without limit before any auth check; an uncaught throw inside the file watcher ended the host process; <code>holdMs</code>, concurrent streams and attachment counts were all uncapped.</p>
+    </div>
+    <div class="card part">
+      <span class="tag">confidentiality</span>
+      <h3>mailbox_search checked nothing</h3>
+      <p>The one tool that took no identity at all, so any token holder could read every participant&rsquo;s private messages by searching for a word in them. Scoped to the caller whenever authentication is on.</p>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:20px">A stored signature nobody verifies detects exactly as much tampering as no signature at all, and a &check; next to code that does not run is worse than a &cross;. That is why the row above now carries a test count rather than a feature list.</p>
 </section>
 
 <footer>Sources: npm registry metadata and READMEs for 22 packages, plus source review of dsh-crosstalk. Capability detection is keyword-based over each package&rsquo;s own documentation &mdash; a package may support something it never wrote down.</footer>
