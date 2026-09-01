@@ -157,6 +157,49 @@ async function getRoute(deps, path, query, response) {
     }))
   }
 
+  // SERVER-SENT EVENTS. The push transport: a client subscribes once and the
+  // server writes each new message as it lands, instead of the client asking
+  // repeatedly. mailbox_wait is the request/reply form of the same thing --
+  // this is for clients that can hold a stream.
+  //
+  // No deadline: the stream stays open until the client disconnects or the
+  // plugin unloads. Heartbeat comments keep intermediaries from closing an
+  // idle connection, and are comments precisely so they cannot be mistaken
+  // for a message.
+  if (path === '/stream') {
+    const to = query.get('to') ?? undefined
+    let cursor = Number(query.get('since') ?? 0)
+
+    response.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive'
+    })
+    response.write(': connected\n\n')
+
+    const push = () => {
+      const { messages, cursor: next } = deps.mailbox.read({ to, since: cursor })
+      for (const message of messages) {
+        response.write(`event: message\ndata: ${JSON.stringify(message)}\n\n`)
+      }
+      cursor = Math.max(cursor, next)
+    }
+
+    // Deliver anything already waiting BEFORE subscribing, or a message that
+    // arrived between the client's cursor and this connection is skipped.
+    push()
+    const unsubscribe = deps.notifier.subscribe(push)
+    // Heartbeat COMMENTS keep an intermediary from closing an idle stream.
+    // Comments precisely so they can never be mistaken for a message.
+    const beat = setInterval(() => response.write(': beat\n\n'), 20000)
+    beat.unref?.()
+
+    const stop = () => { clearInterval(beat); unsubscribe() }
+    response.on('close', stop)
+    response.on('error', stop)
+    return undefined
+  }
+
   if (path === '/health') {
     const peers = deps.presence?.list() ?? []
     return send(response, 200, {

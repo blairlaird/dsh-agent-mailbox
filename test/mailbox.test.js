@@ -276,3 +276,72 @@ test('a foreign file in the presence directory is ignored', (t) => {
 test('presence rejects an invalid identity', (t) => {
   assert.throws(() => createPresence({ dir: tempDir(t) }).announce('a\nb'), /identity/i)
 })
+
+/**
+ * Idempotency and signing, through the mailbox rather than the module.
+ */
+import { verifyMessage } from '../src/integrity.js'
+
+test('the same key and content sends once', (t) => {
+  const m = box(t)
+  const first = m.send({ from: 'a', to: 'b', text: 'once', idempotencyKey: 'k1' })
+  const again = m.send({ from: 'a', to: 'b', text: 'once', idempotencyKey: 'k1' })
+  assert.equal(again.seq, first.seq)
+  assert.equal(again.deduplicated, true)
+  assert.equal(m.read({ to: 'b' }).messages.length, 1, 'a retry must not duplicate')
+})
+
+test('the same key with different content is refused', (t) => {
+  // Answering with the earlier message would deliver one thing while the
+  // caller believes another was sent.
+  const m = box(t)
+  m.send({ from: 'a', to: 'b', text: 'one', idempotencyKey: 'k1' })
+  assert.throws(() => m.send({ from: 'a', to: 'b', text: 'two', idempotencyKey: 'k1' }), /already used/i)
+})
+
+test('different keys send separately', (t) => {
+  const m = box(t)
+  m.send({ from: 'a', to: 'b', text: 'same text', idempotencyKey: 'k1' })
+  m.send({ from: 'a', to: 'b', text: 'same text', idempotencyKey: 'k2' })
+  assert.equal(m.read({ to: 'b' }).messages.length, 2, 'identical text under a new key is a new send')
+})
+
+test('sends without a key are never deduplicated', (t) => {
+  const m = box(t)
+  m.send({ from: 'a', to: 'b', text: 'twice' })
+  m.send({ from: 'a', to: 'b', text: 'twice' })
+  assert.equal(m.read({ to: 'b' }).messages.length, 2)
+})
+
+test('idempotency survives a restart', (t) => {
+  // The key lives in the log, not in memory, so a restart cannot turn a retry
+  // into a duplicate.
+  const file = join(tempDir(t), 'mail.jsonl')
+  const first = createMailbox({ file }).send({ from: 'a', to: 'b', text: 'durable', idempotencyKey: 'k1' })
+  const again = createMailbox({ file }).send({ from: 'a', to: 'b', text: 'durable', idempotencyKey: 'k1' })
+  assert.equal(again.seq, first.seq)
+  assert.equal(again.deduplicated, true)
+})
+
+test('a message is signed when a secret is configured', (t) => {
+  const file = join(tempDir(t), 'mail.jsonl')
+  const m = createMailbox({ file, signingSecret: 'shhh' })
+  const sent = m.send({ from: 'a', to: 'b', text: 'signed' })
+  assert.match(sent.sig, /^[0-9a-f]{64}$/)
+  assert.equal(verifyMessage('shhh', sent), true)
+})
+
+test('a tampered record fails verification', (t) => {
+  // This is the whole point: anyone who can write the file can edit a line,
+  // and signing is what makes that visible rather than silent.
+  const file = join(tempDir(t), 'mail.jsonl')
+  const sent = createMailbox({ file, signingSecret: 'shhh' }).send({ from: 'a', to: 'b', text: 'original' })
+  assert.equal(verifyMessage('shhh', { ...sent, text: 'tampered' }), false)
+})
+
+test('without a secret nothing is signed, and nothing pretends to be', (t) => {
+  const m = box(t)
+  const sent = m.send({ from: 'a', to: 'b', text: 'unsigned' })
+  assert.equal(sent.sig, undefined)
+  assert.equal(verifyMessage('shhh', sent), false, 'unsigned must never read as verified')
+})

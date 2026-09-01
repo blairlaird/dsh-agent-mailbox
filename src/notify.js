@@ -49,6 +49,19 @@ export function createNotifier({ file, mailbox } = {}) {
 
   return {
     /**
+     * Call `listener` whenever the log changes.
+     *
+     * The push transport (`GET /stream`) uses this instead of parking on a
+     * request: one subscription, many messages. Returns an unsubscribe so a
+     * disconnected client cannot leak a listener.
+     */
+    subscribe(listener) {
+      ensureWatching()
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+
+    /**
      * Resolve as soon as a matching message exists after `since`.
      *
      * @returns the same shape as `mailbox.read`, empty when the hold expires.

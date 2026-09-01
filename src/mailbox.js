@@ -38,6 +38,7 @@ import { appendFileSync, readFileSync, readdirSync, existsSync, mkdirSync, renam
 import { dirname, join } from 'node:path'
 
 import { redactDiagnostic } from './redact.js'
+import { fingerprintSend, signMessage, planRetention } from './integrity.js'
 
 /** Bounds. Generous enough for a real handoff, small enough to keep forever. */
 const MAX_TEXT = 16000
@@ -112,7 +113,7 @@ function mentionsIn(text) {
  * @param file - the append-only log. Omit for an in-memory box (tests).
  * @param now - injected clock.
  */
-export function createMailbox({ file, now = Date.now } = {}) {
+export function createMailbox({ file, now = Date.now, signingSecret, maxRecords } = {}) {
   function records() {
     if (file === undefined || !existsSync(file)) return []
     const out = []
@@ -128,7 +129,14 @@ export function createMailbox({ file, now = Date.now } = {}) {
   function append(record) {
     const all = records()
     const seq = all.reduce((high, r) => Math.max(high, r.seq ?? 0), 0) + 1
-    const stored = { seq, at: now(), ...record }
+    const base = { seq, at: now(), ...record }
+    // SIGNING. An append-only log is tamper-EVIDENT, not tamper-proof: anyone
+    // who can write the file can edit a line. A signature makes an altered
+    // record fail verification instead of passing silently. Integrity, not
+    // secrecy -- the log stays readable by design.
+    const stored = signingSecret === undefined || base.kind !== KIND.MESSAGE
+      ? base
+      : { ...base, sig: signMessage(signingSecret, base) }
     if (file !== undefined) {
       mkdirSync(dirname(file), { recursive: true })
       // Append is atomic enough for a single line on every platform we target;
@@ -186,7 +194,7 @@ export function createMailbox({ file, now = Date.now } = {}) {
      *   given, so a reply threads without ceremony.
      * @param priority - free-form, e.g. `urgent`.
      */
-    send({ from, to, text, thread, replyTo, priority } = {}) {
+    send({ from, to, text, thread, replyTo, priority, idempotencyKey } = {}) {
       const author = identity(from, 'from')
       const addressee = identity(to, 'to', { allowBroadcast: true })
       if (String(text ?? '').trim() === '') throw new Error('mailbox: `text` is required')
@@ -194,6 +202,32 @@ export function createMailbox({ file, now = Date.now } = {}) {
       // Redacted on the way IN. An append-only log cannot be edited later to
       // remove a key that was pasted into it.
       const body = redactDiagnostic(bounded(text))
+
+      // IDEMPOTENCY. A client that loses its connection mid-send cannot tell
+      // whether the message landed. Retrying risks saying the same thing
+      // twice; not retrying risks never saying it. A key makes the retry safe.
+      //
+      // The key is matched together with a fingerprint of the arguments, so
+      // reusing a key for DIFFERENT content is refused rather than answered
+      // with the earlier message -- returning the wrong message under a key
+      // the caller believes identifies this one is a wrong answer shaped
+      // exactly like a right one.
+      const fingerprint = idempotencyKey === undefined
+        ? undefined
+        : fingerprintSend({ from: author, to: addressee, text: body, thread, replyTo, priority })
+      if (idempotencyKey !== undefined) {
+        const seen = records().find((r) => r.idem === idempotencyKey)
+        if (seen !== undefined) {
+          if (seen.fp !== fingerprint) {
+            throw new Error(
+              `mailbox: idempotencyKey ${JSON.stringify(idempotencyKey)} was already used for different ` +
+              `content (message ${seen.seq}). Use a new key, or resend the identical message.`
+            )
+          }
+          return { ...seen, deduplicated: true }
+        }
+      }
+
       return append({
         kind: KIND.MESSAGE,
         from: author,
@@ -204,6 +238,7 @@ export function createMailbox({ file, now = Date.now } = {}) {
         ...replyTo === undefined ? {} : { replyTo },
         ...priority === undefined ? {} : { priority: String(priority).slice(0, 32) },
         mentions: mentionsIn(body),
+        ...idempotencyKey === undefined ? {} : { idem: String(idempotencyKey).slice(0, 200), fp: fingerprint },
         text: body
       })
     },

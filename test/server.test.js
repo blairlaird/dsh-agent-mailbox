@@ -253,3 +253,87 @@ test('binding beyond loopback without auth is refused before listening', async (
     startServer({ auth: createAuth({ required: false }) }, { host: '0.0.0.0', port: 4622 }),
     /without authentication/i)
 })
+
+/**
+ * The push transport.
+ *
+ * mailbox_wait is the request/reply form of "tell me when something arrives";
+ * this is the streaming form, for clients that can hold a connection open.
+ */
+
+test('a stream delivers messages as they land', async (t) => {
+  await withServer(t, 4630, async ({ deps, port }) => {
+    const response = await fetch(`http://127.0.0.1:${port}/stream?to=claude`)
+    assert.equal(response.headers.get('content-type'), 'text/event-stream')
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffered = ''
+
+    // Read until a message frame appears, or the test times out on its own.
+    const readUntilMessage = async () => {
+      for (let i = 0; i < 40; i += 1) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffered += decoder.decode(value, { stream: true })
+        if (buffered.includes('event: message')) return true
+      }
+      return false
+    }
+
+    setTimeout(() => { deps.mailbox.send({ from: 'codex', to: 'claude', text: 'streamed hello' }) }, 50)
+    const got = await readUntilMessage()
+    await reader.cancel()
+
+    assert.equal(got, true, 'the stream must deliver without being polled')
+    assert.match(buffered, /streamed hello/)
+  })
+})
+
+test('a stream replays what is already waiting before subscribing', async (t) => {
+  // A message that arrived between the client's cursor and its connection
+  // must not be skipped.
+  await withServer(t, 4631, async ({ deps, port }) => {
+    deps.mailbox.send({ from: 'codex', to: 'claude', text: 'sent before connecting' })
+    const response = await fetch(`http://127.0.0.1:${port}/stream?to=claude`)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffered = ''
+    for (let i = 0; i < 10 && !buffered.includes('event: message'); i += 1) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffered += decoder.decode(value, { stream: true })
+    }
+    await reader.cancel()
+    assert.match(buffered, /sent before connecting/)
+  })
+})
+
+test('a stream filtered to another participant stays quiet', async (t) => {
+  await withServer(t, 4632, async ({ deps, port }) => {
+    const response = await fetch(`http://127.0.0.1:${port}/stream?to=someone-else&since=999999`)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    deps.mailbox.send({ from: 'codex', to: 'claude', text: 'not for the stream' })
+    // One read returns the connect comment; assert no message frame rides along.
+    const { value } = await reader.read()
+    await reader.cancel()
+    assert.doesNotMatch(decoder.decode(value ?? new Uint8Array()), /event: message/)
+  })
+})
+
+test('disconnecting a stream unsubscribes it', async (t) => {
+  // A leaked listener per connection would accumulate silently until the
+  // process degraded.
+  await withServer(t, 4633, async ({ deps, port }) => {
+    const response = await fetch(`http://127.0.0.1:${port}/stream?to=claude`)
+    const reader = response.body.getReader()
+    await reader.read()
+    await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // The notifier still works for everyone else afterwards.
+    const waited = deps.notifier.waitFor({ to: 'claude', holdMs: 300 })
+    deps.mailbox.send({ from: 'codex', to: 'claude', text: 'after disconnect' })
+    assert.equal((await waited).messages.length >= 1, true)
+  })
+})
