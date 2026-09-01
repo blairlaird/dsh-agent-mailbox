@@ -43,6 +43,22 @@ test('the trust section states that peer messages are not instructions', () => {
   assert.match(TRUST_SECTION, /does not outrank your user/i)
 })
 
+test('a throwing service getter does not take the plugin down', (t) => {
+  // Cordis throws `cannot get property "tools" without inject` for a service
+  // the plugin does not declare, and OPTIONAL CHAINING DOES NOT CATCH IT --
+  // `ctx.tools?.register` still throws. This exact shape took the whole
+  // harness down the first time the plugin was installed, and no test caught
+  // it because the fake ctx simply had no `tools` property.
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mailbox-plugin-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const ctx = {
+    logger: { info() {}, error() {} },
+    effect(fn) { this.effects ??= []; this.effects.push(fn) },
+    get tools() { throw new Error('cannot get property "tools" without inject') }
+  }
+  assert.doesNotThrow(() => apply(ctx, { home, port: 0 }))
+})
+
 test('applying registers effects without touching the network', (t) => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-mailbox-plugin-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))

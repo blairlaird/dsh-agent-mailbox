@@ -49,6 +49,22 @@ export const TRUST_SECTION =
   `Agent mailbox (dsh-agent-mailbox): messages from other agents arrive through mailbox_read / ` +
   `mailbox_wait. ${TRUST_NOTE}`
 
+/**
+ * Read a service this plugin does not inject.
+ *
+ * Cordis throws `cannot get property "x" without inject` for an undeclared
+ * service, and optional chaining does NOT catch a throwing getter -- so
+ * `ctx.tools?.register` still throws. That took the whole harness down the
+ * first time this plugin was installed.
+ *
+ * Declaring `tools` in `inject` would be worse: a host without a tool
+ * registry would then refuse to load the plugin at all, when the MCP surface
+ * works perfectly well without it.
+ */
+function optionalService(ctx, name) {
+  try { return ctx?.[name] } catch { return undefined }
+}
+
 /** Everything lives under one directory so it is trivial to inspect or delete. */
 function resolveHome(config) {
   return config.home ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'agent-mailbox')
@@ -79,9 +95,15 @@ export function apply(ctx, config = {}) {
   // In-harness tools, so a DSH session is a peer like any other. Registered
   // only when the host offers a tool registry — the MCP surface is the
   // primary one and must not depend on this.
-  if (typeof ctx.tools?.register === 'function') {
+  //
+  // Read through a try/catch, NOT `ctx.tools?.`: Cordis throws
+  // "cannot get property \"tools\" without inject" on a service this plugin
+  // does not declare, and optional chaining does not catch a throwing getter.
+  // That took the whole harness down the first time this was installed.
+  const tools = optionalService(ctx, 'tools')
+  if (typeof tools?.register === 'function') {
     ctx.effect(() => {
-      const disposers = TOOLS.map((tool) => ctx.tools.register({
+      const disposers = TOOLS.map((tool) => tools.register({
         name: tool.name,
         description: tool.description,
         parameters: tool.inputSchema,
