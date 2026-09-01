@@ -1,0 +1,68 @@
+# Marketplace submission for awesome-dsh-plugin.
+#
+# The DeepSeek Harness plugin market does not take submissions directly. Its
+# catalog is the curated awesome-dsh-plugin registry, and a listing is one PR
+# adding ONE file:
+#
+#   https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+#   -> data/plugins/blairlaird__dsh-agent-mailbox.yml   (this file's contents)
+#
+# npm is NOT required. The market prefers repo-verified npm packages, then an
+# author-supplied prebuilt GitHub Release tarball, then a source download --
+# so the `tarball:` line below is what gives users a prebuilt install without
+# a published npm package.
+#
+# HOW THIS REPO MEASURES AGAINST THE GATE
+#
+#   dsh.bundle manifest ....... yes, package.json -> ./cordis.patch.yml
+#   real working code ......... 205 unit + 42 live + 18 package checks
+#   commits >= 10 ............. yes
+#   repo age >= 24h ........... created 2026-09-01T12:08:47Z, so this
+#                               submission is only valid AFTER 2026-09-02.
+#                               CI checks it automatically and the guide says
+#                               plainly: finish the work and resubmit, nothing
+#                               is held against a resubmission.
+#   dsh-plugin topic .......... added
+#   accurate description ...... every claim below is checkable in the source;
+#                               see the note under the entry.
+#
+# The tarball URL uses a VERSION-FREE asset name on purpose. The guide warns
+# that `latest/download/` resolves `latest` at request time but takes the
+# filename literally, so an asset named with its version 404s the moment the
+# next release is cut -- quietly, and nobody notices. The release carries both
+# names; this line points at the stable one.
+
+url: https://github.com/blairlaird/dsh-agent-mailbox
+name: blairlaird/dsh-agent-mailbox
+category: session
+tarball: https://github.com/blairlaird/dsh-agent-mailbox/releases/latest/download/dsh-agent-mailbox.tgz
+description:
+  en: 'Durable agent-to-agent mailbox: any MCP client, DSH session or A2A agent can address any other. Threads, receipts, search, broadcast, attachments, presence, SSE streaming and HMAC signing over JSON-RPC 2.0, with no runtime dependencies.'
+
+# Why each claim in that description is safe to make -- the guide checks
+# descriptions against the code, and overstating is the main reason an
+# otherwise-good plugin is sent back:
+#
+#   durable ............ append-only JSONL log; reads never consume
+#   MCP client ......... POST /mcp, JSON-RPC 2.0, 11 tools
+#   DSH session ........ /mailbox, /mailbox-send, /mailbox-peers,
+#                        /mailbox-search, verified in a live session
+#   A2A agent .......... GET /.well-known/agent.json
+#   threads ............ thread + replyTo on mailbox_send
+#   receipts ........... mailbox_acknowledge, receipts(), unreadCount()
+#   search ............. mailbox_search
+#   broadcast .......... the reserved "*" addressee
+#   attachments ........ content-hash addressed, mailbox_attachment
+#   presence ........... mailbox_announce + liveness in mailbox_peers
+#   SSE streaming ...... GET /stream
+#   HMAC signing ....... signingSecret; verified by mailbox.integrity()
+#                        and reported on GET /health
+#   no runtime deps .... package.json has no `dependencies`; the only peer
+#                        is optional and never imported
+#
+# `session` matches the closest existing entry, Jesse-njx/dsh-crosstalk
+# ("Cross-session messaging for DSH"), which this plugin credits for the
+# heartbeat registry, atomic temp+rename writes, and the trust-section idea.
+# It is an independent implementation, not a fork, and it adds the two
+# capabilities that audit found missing across all 23 surveyed plugins:
+# full-text search, and external MCP clients joining as peers.

@@ -494,4 +494,15 @@ repo nearly shipped a `files` list containing only `index.js`, `src` and
 it tells you to configure. It packs the real tarball, installs it into an
 empty project, and drives the plugin over HTTP from there.
 
+## Listing it on the DSH plugin market
+
+The market takes no submissions directly — its catalog is the curated
+[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+registry, and a listing is one PR adding one file. **npm is not required:** the
+market prefers a repo-verified npm package, then an author-supplied prebuilt
+GitHub Release tarball, then a source download.
+
+The prepared entry — with every description claim mapped to the code that
+backs it — is [`docs/catalog-entry.yml`](docs/catalog-entry.yml).
+
 MIT.
