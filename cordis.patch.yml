@@ -1,0 +1,25 @@
+# The loader patch that makes this installable with `dsh plugin add`.
+#
+# `dsh.bundle.patch` in package.json points here, and this is the file the
+# harness merges into a profile's plugin tree. Without it the package installs
+# as an ordinary npm dependency and never loads: the README's
+# `dsh plugin --profile web add dsh-agent-mailbox` would appear to succeed and
+# do nothing, which is the same shape of failure this plugin exists to avoid.
+#
+# No `config:` block. Every option is optional and the defaults are the ones a
+# single machine wants -- loopback on 4470, no auth, mailbox under DSH_HOME.
+# Shipping opinionated config here would silently override a profile that had
+# already set its own.
+#
+# To configure it, add a `config:` to YOUR profile's patch, not to this file:
+#
+#   - id: dsh-agent-mailbox
+#     name: dsh-agent-mailbox
+#     config:
+#       identity: dsh                    # this session's name in the mailbox
+#       home: C:/Users/you/.dsh/agent-mailbox   # see the Windows note in the README
+#       notifyCommand: [node, /path/to/notify.mjs]
+#
+- insert:
+    - id: dsh-agent-mailbox
+      name: dsh-agent-mailbox

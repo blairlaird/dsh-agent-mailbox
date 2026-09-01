@@ -18,7 +18,7 @@
  *   node examples/verify-package.mjs      # exits non-zero on any failure
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -76,6 +76,19 @@ try {
   for (const file of ['examples/notify.mjs', 'docs/capability-map.html', 'README.md', 'LICENSE']) {
     check(`the README's ${file} is shipped`, existsSync(join(installed, file)))
   }
+
+  // THE MANIFEST THAT MAKES `dsh plugin add` WORK. Its absence is the single
+  // most common reason a catalog submission is rejected, and it fails silently:
+  // without it the package installs as an ordinary dependency and never loads,
+  // so the README's install command appears to succeed and does nothing.
+  const manifest = JSON.parse(
+    readFileSync(join(installed, 'package.json'), 'utf8'))
+  check('the tarball declares dsh.bundle',
+    manifest.dsh?.bundle?.patch !== undefined, JSON.stringify(manifest.dsh))
+  check('the loader patch it points at is shipped',
+    existsSync(join(installed, manifest.dsh?.bundle?.patch ?? 'cordis.patch.yml')))
+  check('the patch inserts this plugin by name',
+    /name:\s*dsh-agent-mailbox/.test(readFileSync(join(installed, 'cordis.patch.yml'), 'utf8')))
 
   const pkg = await import(pathToFileURL(join(installed, 'index.js')).href)
   check('the package resolves and names itself', pkg.name === 'dsh-agent-mailbox')

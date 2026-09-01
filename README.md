@@ -66,6 +66,24 @@ dsh plugin --profile web add dsh-agent-mailbox
 
 No build hook, no postinstall, no runtime dependencies.
 
+That command works because the package declares a `dsh.bundle` manifest
+pointing at [`cordis.patch.yml`](cordis.patch.yml), which is the file the
+harness merges into a profile's plugin tree. Without that manifest the package
+installs as an ordinary dependency and never loads — the install *appears* to
+succeed and does nothing. `npm run verify:package` asserts both ship in the
+tarball.
+
+Configure it in your own profile patch rather than editing the shipped one:
+
+```yaml
+- id: dsh-agent-mailbox
+  name: dsh-agent-mailbox
+  config:
+    identity: dsh
+    home: C:/Users/you/.dsh/agent-mailbox   # see the Windows note below
+    notifyCommand: [node, /path/to/notify.mjs]
+```
+
 ---
 
 ## Every way in

@@ -18,6 +18,7 @@
   "main": "index.js",
   "files": [
     "index.js",
+    "cordis.patch.yml",
     "src",
     "examples",
     "docs/capability-map.html",
@@ -42,5 +43,15 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
   }
 }
