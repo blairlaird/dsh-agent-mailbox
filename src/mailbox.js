@@ -112,18 +112,39 @@ const CONTROL_IN_TEXT = new RegExp('[' + String.fromCharCode(0) + '-' + String.f
 const CONTROL_IN_LABEL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) +
   String.fromCharCode(127) + ']', 'g')
 
+/**
+ * What a removed control character leaves behind.
+ *
+ * MARKED, NOT DELETED. Reported from the field: a Windows path crossing the
+ * DSH MCP boundary is double-decoded by a LENIENT unescaper upstream --
+ * JSON.parse would refuse `\U` outright, so the decoder is not a strict one --
+ * and `C:\Users\blair\Apps` arrives as "C:Users" + U+0008 + "lairApps", the
+ * `\b` having become a real backspace exactly where the "b" used to be.
+ *
+ * Deleting it stored "C:UserslairApps": a string that reads as a plausible
+ * path, is not one, and carries no sign that anything went wrong. The
+ * double-decode is UPSTREAM and not this plugin's to fix. Destroying the only
+ * surviving evidence of it was, and it broke this file's own rule --
+ * truncation says "[truncated, N more characters]", redaction says
+ * "<REDACTED>", and this alone removed something and said nothing.
+ *
+ * U+FFFD is the standard "a character was here and could not be represented",
+ * which is exactly the claim being made.
+ */
+const REMOVED = '\uFFFD'
+
 /** Thread keys are labels, not payloads; an unbounded one is free storage. */
 function boundedKey(value) {
-  return String(value).replace(CONTROL_IN_LABEL, '').slice(0, 200)
+  return String(value).replace(CONTROL_IN_LABEL, REMOVED).slice(0, 200)
 }
 
 /** Priority is printed in a terminal too, and is a label, not prose. */
 function boundedLabel(value, max) {
-  return String(value).replace(CONTROL_IN_LABEL, '').slice(0, max)
+  return String(value).replace(CONTROL_IN_LABEL, REMOVED).slice(0, max)
 }
 
 function bounded(text) {
-  const body = String(text ?? '').replace(CONTROL_IN_TEXT, '')
+  const body = String(text ?? '').replace(CONTROL_IN_TEXT, REMOVED)
   // Says it was cut: silent truncation reads as the whole message.
   return body.length > MAX_TEXT
     ? `${body.slice(0, MAX_TEXT)}\n… [truncated, ${body.length - MAX_TEXT} more characters]`

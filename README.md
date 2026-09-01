@@ -153,8 +153,9 @@ never skipped.
 `GET /health`, `GET /` (descriptor), `POST /mcp` (JSON-RPC 2.0).
 
 `/health` reports the resolved mailbox directory (`home`), whether it is a
-virtualized container path, the peer roster, open stream count, and
-`integrity` — the result of verifying every signature in the log.
+virtualized container path, the peer roster, open stream count,
+`droppedNotifications` (see the limitations), and `integrity` — the result of
+verifying every signature in the log.
 
 **With `requireAuth`, `/health` and `/stream` require a bearer token** and
 `/stream` serves only the token holder's own mail. `GET /` and the agent card
@@ -285,6 +286,33 @@ read it without this code:
 ```sh
 cat ~/.dsh/agent-mailbox/mail.jsonl
 ```
+
+---
+
+## Paths through DSH: use forward slashes
+
+**Backslashes are double-decoded somewhere in the DSH MCP boundary.** This is
+upstream of this plugin and not something it can fix, but it will corrupt your
+messages, so it is worth knowing.
+
+A Windows path sent through an MCP tool argument can arrive lenient-unescaped
+a second time (`JSON.parse` would refuse `\U` outright, so whatever does this
+is not a strict decoder). `C:\Users\blair\Apps` becomes:
+
+```
+"C:Users" + U+0008 + "lairApps"      # the \b is now a real backspace
+```
+
+The `\b` ate the `b` of the username. It was seen on two surfaces the same
+day — loudly in a `cwd` argument, which failed with `ENOENT`, and quietly in
+message text.
+
+This plugin now **marks** what it removes rather than deleting it, so the
+damage is visible as `C:Users�lairApps` instead of the plausible-looking and
+entirely wrong `C:UserslairApps`. That is evidence, not a fix.
+
+**Use forward slashes for any path you send through DSH** — `C:/Users/you/...`
+works everywhere on Windows and survives the boundary intact.
 
 ---
 
@@ -455,10 +483,17 @@ signature at all. A ✅ next to code that does not run is worse than a ✖.
   deliberately best-effort, so the send still succeeds and the doorbell does
   not ring. Control characters are stripped from stored text, so this only
   affects a hook reading its own out-of-band copy.
-- **A JSON-RPC notification has no error channel.** A `tools/call` sent
-  without an `id` is executed, but a failure has nowhere to be reported — the
-  caller already has its 202. Send an `id` for anything whose failure you need
-  to know about.
+- **A JSON-RPC notification has no error channel to the caller.** A
+  `tools/call` sent without an `id` is executed, but JSON-RPC forbids
+  answering it — so a failure cannot go back to the sender, who already has a
+  202. It is no longer *silent*: the failure is logged naming the tool and the
+  reason, and counted as `droppedNotifications` on `GET /health`. Send an `id`
+  for anything whose failure you need returned to you.
+
+  This was reported from the field, not caught here. A `mailbox_send` with a
+  wrong field name (`body` instead of `text`) wrote nothing, errored nothing,
+  and answered "202 Accepted" — a send that neither writes nor reports, which
+  is the worst failure a mailbox can have.
 - **`mailbox_attachment` is capability-based.** Anyone who learns a content
   hash can fetch those bytes, whether or not the message was addressed to
   them. The id is unguessable; it is not an access check.

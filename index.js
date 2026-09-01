@@ -123,7 +123,10 @@ export function apply(ctx, config = {}) {
   const where = describeHome(home)
   if (where.virtualized) ctx.logger?.error?.(`dsh-agent-mailbox: ${where.warning}`)
 
-  const deps = { mailbox, presence, attachments, notifier, auth, hook, home }
+  // The logger travels in deps so the SERVER can report what it cannot answer.
+  // A JSON-RPC notification has no reply channel; without this, a tools/call
+  // that failed had nowhere at all to be reported and vanished behind a 202.
+  const deps = { mailbox, presence, attachments, notifier, auth, hook, home, logger: ctx.logger }
 
   // The doorbell holds an fs watcher; tie it to the plugin's life so nothing
   // outlives a reload.

@@ -72,7 +72,7 @@ export async function startServer(deps, { host = '127.0.0.1', port = 4470 } = {}
   assertBindAllowed(host, deps.auth)
 
   // Shared across requests: the only thing the routes may mutate.
-  const state = { streams: 0 }
+  const state = { streams: 0, droppedNotifications: 0 }
 
   const server = createServer((request, response) => {
     let body = ''
@@ -170,7 +170,26 @@ async function handle(deps, { method, path, query, token, body, port, state }, r
   if (id === undefined) {
     response.writeHead(202, { 'content-length': 0 })
     response.end()
-    try { await route(deps, request ?? {}, token) } catch { /* a notification has no reply channel */ }
+    try {
+      await route(deps, request ?? {}, token)
+    } catch (error) {
+      // THE REPLY CHANNEL IS CLOSED. THE OPERATOR'S IS NOT.
+      //
+      // JSON-RPC forbids answering a notification, so this failure cannot go
+      // back to the caller -- and swallowing it meant a mailbox_send with a
+      // wrong field name wrote nothing, errored nothing, and returned "202
+      // Accepted". A send that neither writes nor reports is the worst
+      // failure this plugin can have, and it was reported from the field
+      // rather than caught here, which is the reason it is counted as well
+      // as logged: an operator who never reads the log still sees a number
+      // on GET /health that is not zero.
+      state.droppedNotifications += 1
+      const tool = request?.params?.name ?? request?.method ?? 'unknown'
+      deps.logger?.error?.(
+        `dsh-agent-mailbox: dropped a notification for "${tool}" — ${error.message}. ` +
+        'JSON-RPC cannot answer a request sent without an "id"; resend it with one to get the error back.'
+      )
+    }
     return
   }
 
@@ -367,6 +386,9 @@ async function getRoute(deps, { path, query, token, port, state }, response) {
       ...where,
       authRequired: deps.auth?.required === true,
       streams: state.streams,
+      // Non-zero means messages were accepted and silently dropped. See the
+      // notification branch in handle() for why they cannot be answered.
+      droppedNotifications: state.droppedNotifications,
       // The read side of signing. A `sig` field nobody checks detects exactly
       // as much tampering as no signature at all, so the verification result
       // is reported where an operator will actually see it rather than

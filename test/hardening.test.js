@@ -33,7 +33,7 @@ const box = (extra = {}) => {
   return { dir, file, mailbox: createMailbox({ file, ...extra }) }
 }
 
-const withServer = async (body, { auth, mailboxOptions } = {}) => {
+const withServer = async (body, { auth, mailboxOptions, logger } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-mailbox-hard-srv-'))
   const file = join(dir, 'mail.jsonl')
   const mailbox = createMailbox({ file, ...mailboxOptions })
@@ -45,7 +45,8 @@ const withServer = async (body, { auth, mailboxOptions } = {}) => {
     notifier,
     auth: auth ?? createAuth({ required: false }),
     hook: createDeliveryHook({}),
-    home: dir
+    home: dir,
+    logger
   }
   const p = port()
   const server = await startServer(deps, { host: '127.0.0.1', port: p })
@@ -326,13 +327,16 @@ test('control characters are stripped from text, thread and priority', () => {
       priority: `urg${String.fromCharCode(7)}ent`
     })
     // An escape sequence in a message repaints the terminal an operator is
-    // supervising the conversation in -- forging the transcript.
-    assert.doesNotMatch(sent.text, new RegExp(esc))
+    // supervising the conversation in -- forging the transcript. The raw
+    // character must not survive; a MARK of its removal must, so that a
+    // corrupted value cannot pass for a clean one. See the U+0008 case below.
+    assert.doesNotMatch(sent.text, new RegExp(esc), 'the raw escape must not reach a terminal')
     assert.doesNotMatch(sent.text, /\r/)
+    assert.match(sent.text, /�/, 'and its removal must leave a mark')
     assert.match(sent.text, /kept\tkept/, 'tab and newline are prose, and must survive')
     assert.match(sent.text, /\n/)
-    assert.equal(sent.thread, 't[31m')
-    assert.equal(sent.priority, 'urgent')
+    assert.equal(sent.thread, 't�[31m')
+    assert.equal(sent.priority, 'urg�ent')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -533,4 +537,87 @@ test('the agent card does not understate the server', () => {
   // `streaming: false` while GET /stream serves Server-Sent Events is the
   // same class of error as overstating: a client believes it either way.
   assert.equal(agentCard({}).capabilities.streaming, true)
+})
+
+// ------------------------------------------------- REPORTED FROM THE FIELD
+
+test('a control character is MARKED, not silently deleted', () => {
+  const { dir, mailbox } = box()
+  try {
+    // Reported by the peer agent on the other end of this mailbox. A Windows
+    // path crossing the DSH MCP boundary is double-decoded by a LENIENT
+    // unescaper upstream (JSON.parse would refuse `\U` outright), so
+    // `C:\Users\blair\Apps` arrives as "C:Users" + U+0008 + "lairApps" -- the
+    // \b having become a real backspace where the "b" used to be.
+    //
+    // Stripping C0 then deleted the backspace and stored
+    // "C:UserslairApps", which reads as a plausible path and is not one.
+    // The corruption is UPSTREAM and not this plugin's to fix; deleting the
+    // only surviving evidence of it was.
+    const sent = mailbox.send({
+      from: 'a', to: 'b', text: `C:Users${String.fromCharCode(8)}lairApps`
+    })
+    assert.doesNotMatch(sent.text, new RegExp(String.fromCharCode(8)),
+      'the raw control character must not survive into a terminal')
+    assert.match(sent.text, /\uFFFD/,
+      'but something must remain to show that a character was removed')
+    assert.equal(sent.text, 'C:Users\uFFFDlairApps')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('tab and newline are not marked, because they are prose', () => {
+  const { dir, mailbox } = box()
+  try {
+    const sent = mailbox.send({ from: 'a', to: 'b', text: 'one\ttwo\nthree' })
+    assert.equal(sent.text, 'one\ttwo\nthree')
+    assert.doesNotMatch(sent.text, /\uFFFD/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a failing notification is reported to the operator', async () => {
+  // THE WORST FAILURE A MAILBOX CAN HAVE. A tools/call sent as a JSON-RPC
+  // notification is answered 202 and then dispatched; when that dispatch
+  // throws, JSON-RPC forbids replying -- so before this, a send with a wrong
+  // field name wrote nothing, errored nothing, and the caller was told
+  // "Accepted". Reproduced against the live server, not hypothesised.
+  //
+  // The reply channel really is closed. The operator's channel is not.
+  const logged = []
+  await withServer(async ({ port: p, deps }) => {
+    const before = deps.mailbox.read({ to: 'b' }).messages.length
+    const response = await fetch(`http://127.0.0.1:${p}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'mailbox_send', arguments: { from: 'a', to: 'b', body: 'wrong field' } }
+      })
+    })
+    assert.equal(response.status, 202, 'a notification is still never answered')
+    for (let i = 0; i < 40 && logged.length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    assert.equal(deps.mailbox.read({ to: 'b' }).messages.length, before, 'nothing was written')
+    assert.ok(logged.length > 0, 'a dropped notification must reach the operator somehow')
+    assert.match(logged.join('\n'), /mailbox_send/, 'and it must name the tool that failed')
+    assert.match(logged.join('\n'), /text/, 'and carry the reason')
+  }, { logger: { error: (m) => logged.push(String(m)), info() {}, warn() {} } })
+})
+
+test('health counts notifications it could not answer for', async () => {
+  await withServer(async ({ port: p }) => {
+    const send = (args) => fetch(`http://127.0.0.1:${p}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'mailbox_send', arguments: args } })
+    })
+    await send({ from: 'a', to: 'b', body: 'no text field' })
+    await new Promise((r) => setTimeout(r, 250))
+    const health = await (await fetch(`http://127.0.0.1:${p}/health`)).json()
+    // An operator who never reads the log still gets one number that is not
+    // zero, which is the whole point of counting it.
+    assert.ok(health.droppedNotifications >= 1,
+      `expected a non-zero dropped-notification count, got ${health.droppedNotifications}`)
+  })
 })
