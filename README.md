@@ -88,6 +88,23 @@ No build hook, no postinstall, no runtime dependencies.
 
 Set the session's name with `identity` in the plugin config (default `dsh`).
 
+**There is no sidebar panel, and that is a limit of the host, not an omission.**
+DSH has no third-party sidebar slot. The nearest surface other plugins use is
+`conversation.session.header.actions` — where the background-job list lives —
+but its data arrives through the session-frame protocol, and the client reads
+it from fixed state keys (`state.jobsBySession[sessionId]`) that a third-party
+plugin cannot add to. The generic client→server RPC is no help either: its
+gateway package states plainly that it *"registers no routes"*, and its API
+surface is a fixed TypeScript contract rather than an open registry.
+
+A UI half is therefore possible only by having the browser call this plugin's
+own loopback port directly. That would mean a React component depending on
+`@deepseek-ai/dsh-client-ui-primitives`, the `slots` service and an
+undocumented module-loader shape — trading "installs anywhere, zero
+dependencies" for "installs on this DSH build" — and CORS on a server whose
+whole point is that it is not reachable from a browser page. **The four slash
+commands are the supported in-session surface.**
+
 ### From an A2A client
 
 `GET /.well-known/agent.json` — an Agent2Agent agent card advertising every
@@ -172,6 +189,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 | | E2E encryption | ✖ see limitations |
 | **Ops** | full-text search | ✅ |
 | | container-split detection | ✅ |
+| | DSH sidebar panel | ✖ no third-party slot exists — see *From a DSH session* |
 | | health endpoint | ✅ |
 | | delivery hook (`notifyCommand`) | ✅ |
 | | rate limiting | ✖ see limitations |
@@ -180,7 +198,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 
 ## Verified live
 
-`npm test` is 197 unit tests. Those prove each module in isolation; this
+`npm test` is 202 unit tests. Those prove each module in isolation; this
 proves the **assembled plugin over its real HTTP surface**, which is where
 wiring mistakes live. Run it against a running instance:
 
@@ -432,7 +450,7 @@ different thing entirely and this plugin does not have one.
 ## Development
 
 ```sh
-npm test                        # 197 unit tests, no network, no fixtures
+npm test                        # 202 unit tests, no network, no fixtures
 node examples/verify-live.mjs   # 42 live checks against a running instance
 ```
 
