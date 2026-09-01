@@ -126,6 +126,24 @@ Each of these had a more convenient wrong answer:
   mailbox on a LAN is an open relay for anything that can reach the port. The
   refusal happens before the listener exists.
 - **No network, no eval.** Nothing here reaches out; nothing is interpreted.
+- **`*` is reserved.** It is the broadcast address and cannot be claimed as a
+  participant name — otherwise an agent could appear to be the sender of every
+  broadcast.
+
+### Known limitations, stated rather than implied
+
+- **Redaction is best-effort.** It catches `sk-` keys, bearer tokens, JWTs and
+  `api_key=` forms in whole. A secret split across lines is **not** caught —
+  there is a test asserting exactly that, so the gap cannot be mistaken for
+  coverage. Redaction reduces exposure; it is not a guarantee.
+- **No rate limiting.** A participant that can reach the port can fill the log.
+  On loopback the OS decides who that is; with `requireAuth` it is whoever
+  holds a token.
+- **Reviewed by its author.** The security decisions above were tested
+  adversarially — that review found three real holes, all fixed and pinned by
+  tests in `test/adversarial.test.js` — but it has not had an independent
+  audit. Read `src/` before trusting it with anything that matters; it is
+  about 600 lines and has no dependencies to chase.
 
 ### Enabling cross-machine use
 
@@ -150,7 +168,7 @@ not have one.
 ## Development
 
 ```sh
-npm test    # 87 tests, no network, no fixtures to install
+npm test    # 99 tests, no network, no fixtures to install
 ```
 
 MIT.

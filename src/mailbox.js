@@ -52,19 +52,47 @@ const KIND = {
 }
 
 /**
+ * The broadcast address. Reserved, never a participant.
+ *
+ * Found by adversarial review: nothing stopped an agent announcing itself as
+ * `*`. Such a participant would read as a wildcard everywhere it was printed
+ * and would appear to be the sender of every broadcast.
+ */
+const BROADCAST = '*'
+
+/**
+ * Every C0 control character plus DEL, built from codes so the pattern cannot
+ * be mangled by an editor or a tool that rewrites literal control bytes.
+ */
+const CONTROL_CHARS = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) +
+  String.fromCharCode(127) + ']')
+
+/**
  * A participant name must be one clean line.
  *
- * Newlines would break the one-record-per-line shape of the log, and an
- * over-long name is a denial-of-service on every reader that renders it.
+ * Every C0 control character is refused, not just the obvious three. A tab or
+ * newline would break the one-record-per-line shape of the log; the rest
+ * (backspace, escape, carriage return) corrupt any terminal that prints them,
+ * which is where these names are usually read.
  */
-function identity(value, field) {
+function identity(value, field, { allowBroadcast = false } = {}) {
   const name = String(value ?? '').trim()
-  if (name === '' || name.length > MAX_NAME || /[\r\n\t]/.test(name)) {
+  if (name === BROADCAST) {
+    if (allowBroadcast) return name
+    throw new Error(`mailbox: "${BROADCAST}" is the reserved broadcast address and cannot be a participant`)
+  }
+  if (name === '' || name.length > MAX_NAME || CONTROL_CHARS.test(name)) {
     throw new Error(
-      `mailbox: \`${field}\` must be a non-empty single-line identity of at most ${MAX_NAME} characters`
+      `mailbox: \`${field}\` must be a non-empty single-line identity of at most ${MAX_NAME} characters, ` +
+      'with no control characters'
     )
   }
   return name
+}
+
+/** Thread keys are labels, not payloads; an unbounded one is free storage. */
+function boundedKey(value) {
+  return String(value).slice(0, 200)
 }
 
 function bounded(text) {
@@ -160,7 +188,7 @@ export function createMailbox({ file, now = Date.now } = {}) {
      */
     send({ from, to, text, thread, replyTo, priority } = {}) {
       const author = identity(from, 'from')
-      const addressee = identity(to, 'to')
+      const addressee = identity(to, 'to', { allowBroadcast: true })
       if (String(text ?? '').trim() === '') throw new Error('mailbox: `text` is required')
 
       // Redacted on the way IN. An append-only log cannot be edited later to
@@ -171,7 +199,7 @@ export function createMailbox({ file, now = Date.now } = {}) {
         from: author,
         to: addressee,
         ...thread !== undefined
-          ? { thread: String(thread) }
+          ? { thread: boundedKey(thread) }
           : replyTo !== undefined ? { thread: String(replyTo) } : {},
         ...replyTo === undefined ? {} : { replyTo },
         ...priority === undefined ? {} : { priority: String(priority).slice(0, 32) },
