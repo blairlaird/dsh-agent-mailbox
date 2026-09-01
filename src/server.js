@@ -394,6 +394,9 @@ async function getRoute(deps, { path, query, token, port, state }, response) {
       // is reported where an operator will actually see it rather than
       // waiting to be asked. `signed: false` means no secret is configured --
       // it is not an all-clear.
+      // `duplicateSeqs` on this is not cosmetic: two records sharing a seq
+      // means the fold returns one and hides the other, so a non-empty list
+      // is a mailbox that has already lost messages.
       integrity: deps.mailbox?.integrity?.() ?? { signed: false },
       peers
     })

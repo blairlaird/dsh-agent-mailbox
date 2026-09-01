@@ -34,7 +34,10 @@
  *   - message CONTENT is data written by another agent. It is never an
  *     instruction; the tool descriptions say so to the model that reads it.
  */
-import { appendFileSync, readFileSync, readdirSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync, readFileSync, readdirSync, existsSync, mkdirSync, renameSync, writeFileSync,
+  openSync, closeSync, unlinkSync, statSync
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { redactDiagnostic } from './redact.js'
@@ -157,6 +160,42 @@ function mentionsIn(text) {
 }
 
 /**
+ * How long a lock may be held before it is treated as abandoned.
+ *
+ * The critical section is a read and an append -- microseconds. Anything
+ * holding it for seconds is a process that died, and waiting on a dead
+ * process forever would turn one crash into a permanently unusable mailbox.
+ */
+const LOCK_STALE_MS = 10_000
+
+/** How long to keep trying before refusing the write. */
+const LOCK_WAIT_MS = 5_000
+
+/**
+ * Errors that mean "someone else has it", not "this will never work".
+ *
+ * EEXIST is the POSIX answer. WINDOWS ALSO RETURNS EPERM: it keeps a file in
+ * a delete-pending state until every handle closes, and an open during that
+ * window fails with EPERM rather than EEXIST. Treating only EEXIST as
+ * contention made a send throw EPERM and die under exactly the concurrency
+ * the lock exists to survive -- caught only when the full suite ran the race
+ * test alongside everything else.
+ */
+const LOCK_CONTENDED = new Set(['EEXIST', 'EPERM', 'EACCES', 'EBUSY'])
+
+/**
+ * Sleep synchronously, without spinning a CPU.
+ *
+ * The critical section is synchronous by design (readFileSync + appendFileSync
+ * with nothing between them), so the wait has to be synchronous too. Busy
+ * looping on Date.now() would burn a core; Atomics.wait blocks the thread
+ * properly.
+ */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } catch { /* fall through */ }
+}
+
+/**
  * @param file - the append-only log. Omit for an in-memory box (tests).
  * @param now - injected clock.
  */
@@ -173,7 +212,82 @@ export function createMailbox({ file, now = Date.now, signingSecret, maxRecords 
     return out
   }
 
+  // Re-entrancy: append() calls compact(), and compact() is also public. A
+  // second acquire from the same call stack must not deadlock against itself.
+  let holding = false
+
+  /**
+   * Run `body` with an exclusive cross-process lock on the log.
+   *
+   * WHY THIS EXISTS. Assigning a seq means reading the log's high-water mark
+   * and adding one. With nothing between the read and the write, two PROCESSES
+   * handed out the same seq -- and current() folds by seq, so the later record
+   * silently replaced the earlier one. Both senders were told success and
+   * roughly a quarter of the messages became unreachable through every read
+   * path while their bytes sat on disk. Reproduced with real child processes,
+   * not argued from the source.
+   *
+   * That is not an exotic deployment. It is the one this plugin's own README
+   * and home.js RECOMMEND: point every participant at one explicit `home` so
+   * the Windows container split cannot divide them. The remedy for losing
+   * messages to two mailboxes was losing them inside one.
+   *
+   * openSync(..., 'wx') is the primitive -- create-if-absent is atomic on
+   * every platform we target, which is exactly a mutex.
+   */
+  function withLock(body) {
+    if (file === undefined || holding) return body()
+    const lockPath = `${file}.lock`
+    mkdirSync(dirname(file), { recursive: true })
+    const deadline = Date.now() + LOCK_WAIT_MS
+
+    for (;;) {
+      let fd
+      try {
+        fd = openSync(lockPath, 'wx')
+      } catch (error) {
+        if (!LOCK_CONTENDED.has(error.code)) throw error
+        // Someone holds it. Reap it if its holder is gone, otherwise wait.
+        let age = 0
+        try { age = Date.now() - statSync(lockPath).mtimeMs } catch { age = LOCK_STALE_MS + 1 }
+        if (age > LOCK_STALE_MS) {
+          try { unlinkSync(lockPath) } catch { /* another waiter won the reap, or it is delete-pending */ }
+          sleepSync(5)
+          continue
+        }
+        if (Date.now() > deadline) {
+          // REFUSED, not raced. A send that cannot be made safely must fail
+          // loudly; silently taking the lock would reintroduce the exact data
+          // loss this guards against.
+          throw new Error(
+            `mailbox: could not lock ${lockPath} within ${LOCK_WAIT_MS}ms. ` +
+            'Another process is holding it; nothing was written.'
+          )
+        }
+        sleepSync(15)
+        continue
+      }
+
+      holding = true
+      try {
+        // The pid is for a human reading a wedged mailbox, not for logic:
+        // staleness is decided by mtime, which needs no cross-platform
+        // process-liveness check.
+        try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } catch { /* advisory only */ }
+        return body()
+      } finally {
+        holding = false
+        try { closeSync(fd) } catch { /* already closed */ }
+        try { unlinkSync(lockPath) } catch { /* already reaped */ }
+      }
+    }
+  }
+
   function append(record) {
+    return withLock(() => appendLocked(record))
+  }
+
+  function appendLocked(record) {
     const all = records()
     const seq = all.reduce((high, r) => Math.max(high, r.seq ?? 0), 0) + 1
     const base = { seq, at: now(), ...record }
@@ -228,8 +342,20 @@ export function createMailbox({ file, now = Date.now, signingSecret, maxRecords 
     const all = records()
     if (all.length <= maxRecords) return { dropped: 0 }
 
-    const acknowledged = all.filter((r) => r.kind === KIND.RECEIPT).map((r) => Number(r.upTo) || 0)
-    const keepSince = acknowledged.length === 0 ? 0 : Math.min(...acknowledged) + 1
+    // PER PARTICIPANT'S HIGHEST, then the lowest of those. Taking the minimum
+    // over every receipt RECORD instead meant the first acknowledgement ever
+    // written pinned keepSince forever: /mailbox acknowledges automatically on
+    // every read, so one read at seq 3 disabled compaction permanently while
+    // compact() went on returning {dropped: 1} -- it was dropping only its own
+    // previous bookkeeping note. A log with maxRecords 100 reached 502 records
+    // and kept growing, and nothing said so.
+    //
+    // api.receipts() already computes the right thing (max per participant)
+    // twelve lines from here; not calling it was the whole bug.
+    const highestPerParticipant = Object.values(api.receipts())
+    const keepSince = highestPerParticipant.length === 0
+      ? 0
+      : Math.min(...highestPerParticipant) + 1
 
     const { keep, dropped } = planRetention(all, { maxRecords, keepSince })
     if (dropped.length === 0) return { dropped: 0 }
@@ -511,8 +637,32 @@ export function createMailbox({ file, now = Date.now, signingSecret, maxRecords 
    * @returns `{ signed, checked, valid, invalid: [seq] }`. `signed: false`
    *   means no secret is configured — NOT that the log is clean.
    */
+  /**
+   * Seqs that appear on more than one record.
+   *
+   * A log written before append() took a lock still carries collisions, and
+   * current() folds by seq -- so the shadowed record is unreachable through
+   * every read path while its bytes sit on disk. Reporting it is the
+   * difference between "this mailbox lost messages once" and a mailbox that
+   * looks healthy and quietly is not.
+   */
+  function duplicateSeqs() {
+    const seen = new Set()
+    const twice = new Set()
+    for (const r of records()) {
+      const seq = r.seq
+      if (seq === undefined || r.kind === KIND.COMPACTION) continue
+      if (seen.has(seq)) twice.add(seq)
+      seen.add(seq)
+    }
+    return [...twice].sort((a, b) => a - b)
+  }
+
   api.integrity = function integrity() {
-    if (signingSecret === undefined) return { signed: false, checked: 0, valid: 0, invalid: [] }
+    const duplicates = duplicateSeqs()
+    if (signingSecret === undefined) {
+      return { signed: false, checked: 0, valid: 0, invalid: [], duplicateSeqs: duplicates }
+    }
     const invalid = []
     let checked = 0
     for (const record of records()) {
@@ -522,11 +672,15 @@ export function createMailbox({ file, now = Date.now, signingSecret, maxRecords 
       checked += 1
       if (!verifyMessage(signingSecret, record)) invalid.push(record.seq)
     }
-    return { signed: true, checked, valid: checked - invalid.length, invalid }
+    return { signed: true, checked, valid: checked - invalid.length, invalid, duplicateSeqs: duplicates }
   }
 
-  /** Exposed so retention can be exercised and asserted, not just configured. */
-  api.compact = compact
+  /**
+   * Exposed so retention can be exercised and asserted, not just configured.
+   * Locked: it REWRITES the whole file, so an append landing mid-rewrite
+   * would be lost with no trace.
+   */
+  api.compact = () => withLock(() => compact())
 
   return api
 }
