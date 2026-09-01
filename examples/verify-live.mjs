@@ -175,6 +175,86 @@ try {
   const expired = await call('mailbox_wait', { to: 'nobody-home', since: quietFrom, holdMs: 400 })
   check('an expired hold returns empty without losing anything',
     expired.messages.length === 0 && Date.now() - expiredStart >= 350)
+
+  // ---- hardening -------------------------------------------------------
+  // Every check below is a regression from an independent security audit.
+  // They run against the DEFAULT loopback configuration; the token-gated
+  // behaviour (an unauthenticated /stream refused, ?to= unable to select
+  // another participant) needs requireAuth and is covered in the unit suite.
+
+  const forgedCard = await (await fetch(`${BASE}/.well-known/agent.json?port=9999@evil.example`)).json()
+  // WHATWG reads "127.0.0.1:9999" as userinfo here, so interpolating the
+  // query moved the card's ORIGIN to evil.example -- an A2A redirector.
+  check('the agent card ignores a peer-supplied ?port=',
+    new URL(forgedCard.url).hostname === '127.0.0.1', forgedCard.url)
+  check('the agent card does not understate streaming', forgedCard.capabilities?.streaming === true)
+
+  const malformed = await (await fetch(`${BASE}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{ not json'
+  })).json()
+  check('a malformed body is -32700, not an accepting 202',
+    malformed.error?.code === -32700 && malformed.id === null)
+
+  // A notification is never ANSWERED, but must still be EXECUTED: accepted
+  // and never run is a lost message wearing a success code.
+  const notifyText = `notification-dispatch-${Date.now()}`
+  const notified = await fetch(`${BASE}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mailbox_send', arguments: { from: B, to: A, text: notifyText } }
+    })
+  })
+  let landed = false
+  for (let i = 0; i < 40 && !landed; i += 1) {
+    await new Promise((r) => setTimeout(r, 50))
+    landed = (await call('mailbox_read', { to: A })).messages.some((m) => m.text === notifyText)
+  }
+  check('a notification is answered 202 and still dispatched', notified.status === 202 && landed)
+
+  // A non-numeric ?since became NaN, and `seq > NaN` is false for every
+  // record: a subscriber that looked healthy and could never hear anything.
+  const streamed = await (async () => {
+    const control = new AbortController()
+    const timer = setTimeout(() => control.abort(), 1200)
+    const marker = `stream-marker-${Date.now()}`
+    let text = ''
+    try {
+      const response = await fetch(`${BASE}/stream?to=${A}&since=abc`, { signal: control.signal })
+      setTimeout(() => { void call('mailbox_send', { from: B, to: A, text: marker }) }, 150)
+      const decoder = new TextDecoder()
+      for await (const chunk of response.body) {
+        text += decoder.decode(chunk, { stream: true })
+        if (text.includes(marker)) break
+      }
+    } catch { /* aborting the read is how this ends */ } finally { clearTimeout(timer) }
+    return text.includes(marker)
+  })()
+  check('the SSE stream delivers, and a non-numeric ?since does not deafen it', streamed)
+
+  const healthNow = await (await fetch(`${BASE}/health`)).json()
+  // Signing that nobody verifies detects exactly as much tampering as no
+  // signing at all, so the verification result is reported, not just stored.
+  check('health reports where the mailbox actually resolved',
+    typeof healthNow.home === 'string', healthNow.home)
+  check('health reports the signing verification result', healthNow.integrity !== undefined,
+    `signed=${healthNow.integrity?.signed}`)
+
+  const oversize = await (async () => {
+    try {
+      const response = await fetch(`${BASE}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', pad: 'x'.repeat(9 * 1024 * 1024) })
+      })
+      return response.status
+    } catch { return 413 }   // a destroyed connection is also a refusal
+  })()
+  check('an oversize body is refused rather than buffered', oversize === 413, `status ${oversize}`)
 } catch (error) {
   check('verification run completed', false, error.message)
 }

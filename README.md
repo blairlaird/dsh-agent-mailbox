@@ -104,6 +104,14 @@ never skipped.
 
 `GET /health`, `GET /` (descriptor), `POST /mcp` (JSON-RPC 2.0).
 
+`/health` reports the resolved mailbox directory (`home`), whether it is a
+virtualized container path, the peer roster, open stream count, and
+`integrity` — the result of verifying every signature in the log.
+
+**With `requireAuth`, `/health` and `/stream` require a bearer token** and
+`/stream` serves only the token holder's own mail. `GET /` and the agent card
+stay open: a client has to be able to discover how to authenticate.
+
 ---
 
 ## Tools
@@ -131,7 +139,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 | category | capability | status |
 |---|---|---|
 | **Transport** | HTTP / JSON-RPC 2.0 | ✅ |
-| | SSE streaming | ✅ |
+| | SSE streaming (`GET /stream`) | ✅ |
 | | long-poll (`mailbox_wait`) | ✅ |
 | | in-process (DSH commands) | ✅ |
 | | WebSocket | ✖ SSE covers push; no client asked for it |
@@ -147,7 +155,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 | | ordering (monotonic seq) | ✅ |
 | | replay from any cursor | ✅ |
 | | idempotent send | ✅ |
-| | retention / compaction | ✅ |
+| | retention / compaction (`maxRecords`) | ✅ |
 | | dead-letter | ✖ nothing is undeliverable; the log holds it |
 | **Content** | text, UTF-8 | ✅ |
 | | attachments (content-addressed) | ✅ |
@@ -156,12 +164,14 @@ Everything a messaging system can reasonably have, and where this one stands.
 | | typing indicators | ✖ meaningless between agents |
 | **Discovery** | presence registry with liveness | ✅ |
 | | A2A agent card | ✅ |
-| **Integrity** | HMAC message signing | ✅ |
+| **Integrity** | HMAC signing of every record kind | ✅ |
+| | signature verification (`integrity()`, `/health`) | ✅ |
 | | secret redaction on ingest | ✅ |
 | | bearer-token identity | ✅ |
 | | stated trust boundary | ✅ |
 | | E2E encryption | ✖ see limitations |
 | **Ops** | full-text search | ✅ |
+| | container-split detection | ✅ |
 | | health endpoint | ✅ |
 | | delivery hook (`notifyCommand`) | ✅ |
 | | rate limiting | ✖ see limitations |
@@ -170,7 +180,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 
 ## Verified live
 
-`npm test` is 157 unit tests. Those prove each module in isolation; this
+`npm test` is 197 unit tests. Those prove each module in isolation; this
 proves the **assembled plugin over its real HTTP surface**, which is where
 wiring mistakes live. Run it against a running instance:
 
@@ -178,7 +188,7 @@ wiring mistakes live. Run it against a running instance:
 node examples/verify-live.mjs      # exits non-zero on any failure
 ```
 
-34 checks, all passing: MCP handshake · tool surface · trust note on every
+42 checks, all passing: MCP handshake · tool surface · trust note on every
 reading tool · A2A card · health · `-32601` for unknown method **and** unknown
 tool · `-32000` for a failing tool · bare-202 notifications · 404 · 405 ·
 announce/presence · send/read · cursor · non-consuming reads · threading ·
@@ -186,14 +196,22 @@ broadcast · mentions · priority · edit-supersede · author-only edit ·
 withdraw-tombstone · reactions · receipts · search hit *and* miss · attachment
 round-trip by hash · path-traversal refusal · redaction on ingest · reserved
 `*` · UTF-8 (`— café 日本語 🛰️`) · shell metacharacters stored inert ·
-wake-on-delivery (0.2s) · expired-hold safety.
+wake-on-delivery (0.2s) · expired-hold safety · agent card immune to a
+peer-supplied `?port=` · `-32700` on a malformed body · notifications
+dispatched as well as acknowledged · SSE delivery with a junk `?since` ·
+health reporting the resolved home and the signature check · oversize bodies
+refused with 413.
 
 Three of those checks failed on the first live run and **all three were bugs in
 the test, not the plugin** — a cursor that could never match, a wait that
 returned instantly because a broadcast matches every reader, and a count that
-only held on a fresh log. The unit suite was fully green while the assembled
-system had assumptions nobody had tested. That is the argument for keeping this
-script.
+only held on a fresh log. Two more did it again while fixing the audit findings
+below: the container detector's own tests passed `'C:\Users\...'` as a plain
+JavaScript string, where `\U`, `\A`, `\L` and `\P` collapse to bare letters — so
+they asserted against a path containing no backslashes at all, and blamed the
+detector for failing to match one. The unit suite was green throughout. That is
+the argument for keeping this script, and for distrusting a test that fails
+before distrusting the code.
 
 ---
 
@@ -208,6 +226,39 @@ read it without this code:
 ```sh
 cat ~/.dsh/agent-mailbox/mail.jsonl
 ```
+
+---
+
+## Where the mailbox actually lives — read this on Windows
+
+`DSH_HOME` is derived from `%APPDATA%`, and Windows **redirects `%APPDATA%`
+per packaged app**:
+
+```
+C:\Users\you\AppData\Local\Packages\<AppIdentity>\LocalCache\Roaming\.dsh\...
+```
+
+So the mailbox path depends on **which app launched the harness**. Two agents
+each launching it get two different mailboxes at the same nominal path, and
+neither can see the other. This was found the hard way, live: 61 messages in
+one container's copy, 18 in another, the running server appending only to the
+second, and nothing anywhere saying so. Both halves reported healthy.
+
+A process inside a container cannot see the un-virtualized path it was denied,
+so there is no clever path fix. The remedy is refusing to be silent:
+
+- `GET /health` reports the resolved directory on **every** call, as `home`.
+- When that directory is a container path, `virtualized` is `true`, `container`
+  names the app, and `warning` explains the consequence.
+- The plugin logs the same warning at startup.
+
+**The fix is to set an explicit `home` outside `AppData`:**
+
+```js
+{ home: 'C:/Users/you/.dsh/agent-mailbox' }
+```
+
+Every participant then shares one log, whatever launched them.
 
 ---
 
@@ -271,6 +322,47 @@ Each of these had a more convenient wrong answer:
   different content is refused rather than answered with the earlier message.
 - **No network, no eval.** Nothing here reaches out; nothing is interpreted.
 
+### Independently audited, and what it found
+
+This plugin was put through a 40-agent adversarial review, separate from the
+review that shaped its design. It confirmed **32 findings**, and two of them
+were reachable with no credential at all:
+
+- **`GET /stream` was served before authentication and returned the whole log.**
+  `POST /mcp` refused an unauthorized caller correctly; the GET routes, written
+  later as "just a read", never touched the auth layer. Anyone who could open a
+  socket could stream every message. Gating the route turned out to be only
+  half the fix — a caller holding a *valid* token could still read another
+  participant's mail with `?to=`. The addressee is now derived from the
+  resolved identity, and the query string cannot select it.
+- **`?port=` was interpolated into the A2A agent card's advertised URL.**
+  `?port=4470@evil.example` made the card's origin `evil.example`, because
+  WHATWG URL parsing reads `127.0.0.1:4470` as userinfo. The card is now built
+  from the port the server is actually listening on.
+
+The rest, all fixed and all pinned by tests in
+[`test/hardening.test.js`](test/hardening.test.js): unbounded request-body
+buffering before any auth check; an SSE cursor that skipped everything past one
+page; `current()` folding edits and withdrawals without re-checking authorship,
+so one appended line could retarget anyone's message; idempotency keys sharing
+one global namespace, so a peer could pre-burn a key and turn another agent's
+send into a refusal; control characters surviving into terminal output;
+`mailbox_search` performing no identity check at all; attachments written
+before the send was validated; an uncaught throw inside the file watcher that
+ended the host process; and an unbounded `holdMs`.
+
+**Two documented features were not running.** `signingSecret` and `maxRecords`
+were accepted in config and dropped on the floor, `signMessage` covered only
+`message` records — leaving edit and withdraw, the two records that *rewrite* a
+message, outside the signature — and nothing ever verified a signature.
+Signing now covers every record kind, `mailbox.integrity()` is the read side,
+and `GET /health` reports it. `planRetention` was written, tested, and never
+called; compaction now runs, never drops below the least-advanced acknowledged
+reader, and writes a record saying what it removed.
+
+A stored signature nobody verifies detects exactly as much tampering as no
+signature at all. A ✅ next to code that does not run is worse than a ✖.
+
 ### Known limitations, stated rather than implied
 
 - **Redaction is best-effort.** It catches whole `sk-` keys, bearer tokens,
@@ -279,15 +371,34 @@ Each of these had a more convenient wrong answer:
   coverage.
 - **No rate limiting.** A participant that can reach the port can fill the log.
   On loopback the OS decides who that is; with `requireAuth`, whoever holds a
-  token.
+  token. Request bodies are capped at 8 MiB and concurrent SSE subscribers at
+  32, but nothing limits how *often* an authorized peer may send.
+- **Every operation re-reads and re-parses the whole log.** Fine for a
+  conversation between agents; not a queue for high-volume traffic. Set
+  `maxRecords` to bound it. `/mailbox-peers` is worse than the rest — it is
+  O(peers × log) — and the peer set is itself peer-controlled.
+- **A log past roughly 512 MB stops working entirely.** `readFileSync` returns
+  a string, and V8 caps string length. There is no partial-read recovery path:
+  set `maxRecords` before you get there.
+- **The presence directory grows one file per distinct announced name and is
+  never pruned.** Names are bounded and validated, so this is disk, not
+  execution — but a peer that announces under many names leaves them all.
 - **No end-to-end encryption.** Messages are readable by anyone who can read
   the file. Signing gives integrity, not secrecy — deliberately, because the
   log's value is that a human can read it.
 - **Signing is symmetric.** HMAC proves a record was not altered by someone
   without the secret. It is not non-repudiation between mutually distrusting
-  parties, and does not claim to be.
-- **The whole log is re-read on every operation.** Fine for a conversation
-  between agents; not a queue for high-volume traffic.
+  parties, and does not claim to be. It is also **opt-in**: with no
+  `signingSecret`, `integrity()` reports `signed: false`, which is not an
+  all-clear.
+- **A NUL byte in message text silently suppresses the delivery hook** for that
+  message. Node refuses NUL in an environment value, and the hook is
+  deliberately best-effort, so the send still succeeds and the doorbell does
+  not ring. Control characters are stripped from stored text, so this only
+  affects a hook reading its own out-of-band copy.
+- **`mailbox_attachment` is capability-based.** Anyone who learns a content
+  hash can fetch those bytes, whether or not the message was addressed to
+  them. The id is unguessable; it is not an access check.
 
 ### Enabling cross-machine use
 
@@ -317,8 +428,8 @@ different thing entirely and this plugin does not have one.
 ## Development
 
 ```sh
-npm test                        # 157 unit tests, no network, no fixtures
-node examples/verify-live.mjs   # 34 live checks against a running instance
+npm test                        # 197 unit tests, no network, no fixtures
+node examples/verify-live.mjs   # 42 live checks against a running instance
 ```
 
 MIT.
