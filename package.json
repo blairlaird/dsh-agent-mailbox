@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-mailbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "description": "Durable agent-to-agent mailbox for DeepSeek Harness: any MCP client or DSH session can address any other. Threads, receipts, search, broadcast, edit/withdraw, reactions. Local-only, zero dependencies, secrets redacted on ingest.",
@@ -19,7 +19,11 @@
   "files": [
     "index.js",
     "src",
-    "README.md"
+    "examples",
+    "docs/capability-map.html",
+    "docs/index.html",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/*.test.js"
@@ -30,5 +34,12 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/blairlaird/dsh-agent-mailbox.git"
+  },
+  "homepage": "https://blairlaird.github.io/dsh-agent-mailbox/",
+  "bugs": {
+    "url": "https://github.com/blairlaird/dsh-agent-mailbox/issues"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

@@ -174,7 +174,11 @@ export function createMailbox({ file, now = Date.now, signingSecret, maxRecords 
       // the temp+rename dance is reserved for whole-file rewrites, which is
       // what compaction below does.
       appendFileSync(file, `${JSON.stringify(stored)}\n`, 'utf8')
-      compact()
+      // Guarded on the count we ALREADY have. compact() re-reads the whole
+      // log just to decide whether it needs to do anything, so calling it
+      // unconditionally would double the read cost of every single send in
+      // order to answer "no" almost every time.
+      if (maxRecords !== undefined && all.length + 1 > maxRecords) compact()
     }
     return stored
   }

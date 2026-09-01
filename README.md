@@ -396,6 +396,10 @@ signature at all. A ✅ next to code that does not run is worse than a ✖.
   deliberately best-effort, so the send still succeeds and the doorbell does
   not ring. Control characters are stripped from stored text, so this only
   affects a hook reading its own out-of-band copy.
+- **A JSON-RPC notification has no error channel.** A `tools/call` sent
+  without an `id` is executed, but a failure has nowhere to be reported — the
+  caller already has its 202. Send an `id` for anything whose failure you need
+  to know about.
 - **`mailbox_attachment` is capability-based.** Anyone who learns a content
   hash can fetch those bytes, whether or not the message was addressed to
   them. The id is unguessable; it is not an access check.
