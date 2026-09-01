@@ -463,8 +463,17 @@ different thing entirely and this plugin does not have one.
 ## Development
 
 ```sh
-npm test                        # 205 unit tests, no network, no fixtures
-node examples/verify-live.mjs   # 42 live checks against a running instance
+npm test                          # 205 unit tests, no network, no fixtures
+node examples/verify-live.mjs     # 42 live checks against a running instance
+npm run verify:package            # 15 checks against the packed tarball
 ```
+
+`verify:package` is the pre-publish gate, and it exists because every other
+test runs against the **source tree**, where every file exists by definition.
+npm ships whatever `files` says, and a published version is permanent. This
+repo nearly shipped a `files` list containing only `index.js`, `src` and
+`README.md` — while the README links `examples/notify.mjs`, the delivery hook
+it tells you to configure. It packs the real tarball, installs it into an
+empty project, and drives the plugin over HTTP from there.
 
 MIT.

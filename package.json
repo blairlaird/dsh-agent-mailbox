@@ -26,7 +26,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "verify:package": "node examples/verify-package.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*"
