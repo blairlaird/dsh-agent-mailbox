@@ -147,7 +147,14 @@ async function getRoute(deps, path, query, response) {
   // mailbox without prior configuration; it describes capabilities and
   // nothing about the machine it runs on.
   if (path === '/.well-known/agent.json' || path === '/agent-card') {
-    return send(response, 200, agentCard({ url: `http://127.0.0.1:${query.get('port') ?? ''}`.replace(/:$/, '') }))
+    return send(response, 200, agentCard({
+      url: `http://127.0.0.1:${query.get('port') ?? ''}`.replace(/:$/, ''),
+      // mailbox_wait is pull-by-held-request. It is not A2A push. Only the
+      // configured delivery hook can wake a turn-based client after the
+      // sender's request has completed, so advertise push only when that
+      // hook is actually enabled.
+      pushNotifications: deps.hook?.enabled === true
+    }))
   }
 
   if (path === '/health') {

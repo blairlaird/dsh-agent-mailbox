@@ -223,13 +223,13 @@ export async function dispatch({ mailbox, presence, attachments, notifier, auth,
  * this mailbox without prior configuration. It advertises capabilities and
  * nothing about the machine it runs on.
  */
-export function agentCard({ name = 'dsh-agent-mailbox', url } = {}) {
+export function agentCard({ name = 'dsh-agent-mailbox', url, pushNotifications = false } = {}) {
   return {
     name,
     description: 'Durable agent-to-agent mailbox: threads, receipts, search, broadcast, attachments, presence.',
     version: '0.1.0',
     ...url === undefined ? {} : { url },
-    capabilities: { streaming: false, pushNotifications: true, stateTransitionHistory: true },
+    capabilities: { streaming: false, pushNotifications, stateTransitionHistory: true },
     defaultInputModes: ['text'],
     defaultOutputModes: ['text'],
     skills: TOOLS.map((t) => ({ id: t.name, name: t.name, description: t.description }))

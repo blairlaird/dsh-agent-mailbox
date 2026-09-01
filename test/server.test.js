@@ -16,9 +16,10 @@ import { createMailbox, createPresence } from '../src/mailbox.js'
 import { createAttachmentStore } from '../src/attachments.js'
 import { createNotifier } from '../src/notify.js'
 import { createAuth, issueToken, hashToken } from '../src/auth.js'
+import { createDeliveryHook } from '../src/hook.js'
 
 /** Always closes, so a failing assertion cannot hang the whole run. */
-const withServer = async (t, port, body, { auth } = {}) => {
+const withServer = async (t, port, body, { auth, hook } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-mailbox-srv-'))
   const file = join(dir, 'mail.jsonl')
   const mailbox = createMailbox({ file })
@@ -28,7 +29,8 @@ const withServer = async (t, port, body, { auth } = {}) => {
     presence: createPresence({ dir: join(dir, 'peers') }),
     attachments: createAttachmentStore({ dir: join(dir, 'blobs') }),
     notifier,
-    auth: auth ?? createAuth({ required: false })
+    auth: auth ?? createAuth({ required: false }),
+    hook: hook ?? createDeliveryHook({})
   }
   const server = await startServer(deps, { host: '127.0.0.1', port })
   try { return await body({ server, deps, port }) } finally {
@@ -118,13 +120,21 @@ test('a notification is answered with a bare 202', async (t) => {
   })
 })
 
-test('the A2A agent card is published for discovery', async (t) => {
+test('the A2A agent card does not claim push when no delivery hook is configured', async (t) => {
   await withServer(t, 4609, async ({ port }) => {
     const card = await fetch(`http://127.0.0.1:${port}/.well-known/agent.json`).then((r) => r.json())
     assert.equal(card.name, 'dsh-agent-mailbox')
     assert.ok(card.skills.length >= 10, 'the card advertises the tools as skills')
-    assert.equal(card.capabilities.pushNotifications, true)
+    assert.equal(card.capabilities.pushNotifications, false)
   })
+})
+
+test('the A2A agent card claims push only when the delivery hook is enabled', async (t) => {
+  const hook = createDeliveryHook({ command: ['node', 'notify.mjs'] })
+  await withServer(t, 4623, async ({ port }) => {
+    const card = await fetch(`http://127.0.0.1:${port}/.well-known/agent.json`).then((r) => r.json())
+    assert.equal(card.capabilities.pushNotifications, true)
+  }, { hook })
 })
 
 test('the descriptor names the endpoint, health and card', async (t) => {
