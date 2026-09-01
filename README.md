@@ -61,10 +61,20 @@ how a mailbox becomes a prompt-injection channel.
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-agent-mailbox
+dsh plugin --profile web add https://github.com/blairlaird/dsh-agent-mailbox/releases/latest/download/dsh-agent-mailbox.tgz
 ```
 
-No build hook, no postinstall, no runtime dependencies.
+That is the prebuilt tarball from the GitHub Release. No build hook, no
+postinstall, no runtime dependencies, and **no npm account needed by anyone**.
+
+`dsh plugin add` delegates to `pnpm add`, so a *bare package name* would be
+resolved from the public npm registry — which is why the short form below
+works only once this is published there. The URL form has no such dependency,
+and the plugin market installs from the same Release asset.
+
+```sh
+dsh plugin --profile web add dsh-agent-mailbox   # after an npm publish
+```
 
 That command works because the package declares a `dsh.bundle` manifest
 pointing at [`cordis.patch.yml`](cordis.patch.yml), which is the file the
