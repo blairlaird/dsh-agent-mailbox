@@ -24,6 +24,21 @@ import { dirname } from 'node:path'
 export const DEFAULT_HOLD_MS = 25_000
 
 /**
+ * The longest a single HTTP request may be parked.
+ *
+ * READ THE HEADER ABOVE BEFORE CHANGING THIS. It is a bound on a PARKED
+ * REQUEST, not on work. An expired hold returns empty, drops no message,
+ * moves no cursor, and cancels nothing, so it is indistinguishable from never
+ * having asked -- the caller simply asks again. Nothing here can end a job.
+ *
+ * It exists because `holdMs` was peer-supplied and unbounded: one caller
+ * asking for `holdMs: 999999999` pinned a connection, a timer and a listener
+ * effectively forever, and enough of those exhaust the server's sockets
+ * without ever sending a message.
+ */
+export const MAX_HOLD_MS = 300_000
+
+/**
  * @param file - the mailbox log to watch.
  * @param mailbox - a mailbox to read through, so filters stay in one place.
  */
@@ -38,7 +53,15 @@ export function createNotifier({ file, mailbox } = {}) {
     mkdirSync(dirname(file), { recursive: true })
     try {
       watcher = watch(dirname(file), { persistent: false }, () => {
-        for (const notify of [...listeners]) notify()
+        // EACH LISTENER IS ISOLATED. A throw inside an fs.watch callback is
+        // not caught by anything above it -- it surfaces as an uncaught
+        // exception and takes the host process down. So one listener whose
+        // mailbox read fails (a log mid-rewrite, a permission blip, a
+        // disconnected stream) must not be able to end the harness that this
+        // plugin is a guest in.
+        for (const notify of [...listeners]) {
+          try { notify() } catch { /* one deaf listener, not a dead host */ }
+        }
       })
     } catch {
       // A platform or sandbox without file watching degrades to the caller's
@@ -67,6 +90,14 @@ export function createNotifier({ file, mailbox } = {}) {
      * @returns the same shape as `mailbox.read`, empty when the hold expires.
      */
     async waitFor({ since = 0, holdMs = DEFAULT_HOLD_MS, ...filter } = {}) {
+      // Clamped, and a non-number falls back rather than becoming NaN -- a
+      // NaN delay fires immediately, which would turn a wait into a busy
+      // poll. Again: this bounds the REQUEST, never any work.
+      const asked = Number(holdMs)
+      const hold = Number.isFinite(asked) && asked >= 0
+        ? Math.min(asked, MAX_HOLD_MS)
+        : DEFAULT_HOLD_MS
+
       // Check first: a message that arrived before the wait began must not be
       // missed while listening for the next one.
       const immediate = mailbox.read({ since, ...filter })
@@ -87,7 +118,10 @@ export function createNotifier({ file, mailbox } = {}) {
           if (found.messages.length > 0) finish(found)
         }
         // Transport bound only: answers "nothing yet", never cancels anything.
-        const timer = setTimeout(() => finish({ ...mailbox.read({ since, ...filter }), waited: true }), holdMs)
+        const timer = setTimeout(() => {
+          try { finish({ ...mailbox.read({ since, ...filter }), waited: true }) }
+          catch { finish({ messages: [], cursor: since, waited: true }) }
+        }, hold)
         // Unref so a parked wait cannot keep the host process alive at exit.
         timer.unref?.()
         listeners.add(check)

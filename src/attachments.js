@@ -37,31 +37,61 @@ function safeName(name) {
   return String(name ?? 'attachment').replace(/[\r\n]/g, ' ').slice(0, 200)
 }
 
+/** Decode and validate, WITHOUT touching the disk. */
+function describe({ content, name, mediaType } = {}) {
+  const bytes = Buffer.isBuffer(content)
+    ? content
+    : Buffer.from(String(content ?? ''), 'base64')
+
+  if (bytes.length === 0) throw new Error('attachments: content is required')
+  if (bytes.length > MAX_BYTES) {
+    // Refused rather than truncated: half a diff is worse than none, and
+    // silently storing a partial file would corrupt what the reader gets.
+    throw new Error(
+      `attachments: ${bytes.length} bytes exceeds the ${MAX_BYTES}-byte limit; ` +
+      'send a summary and a path the recipient can open themselves'
+    )
+  }
+
+  return {
+    bytes,
+    meta: {
+      id: createHash('sha256').update(bytes).digest('hex'),
+      name: safeName(name),
+      bytes: bytes.length,
+      // Recorded as a label only. Nothing here acts on it, so a lie costs
+      // the reader nothing but a wrong guess about how to display it.
+      mediaType: String(mediaType ?? 'application/octet-stream').slice(0, 100)
+    }
+  }
+}
+
 export function createAttachmentStore({ dir } = {}) {
   return {
+    /**
+     * Identify and validate an attachment without storing it.
+     *
+     * Separated from `put` so a caller can learn the id -- and have oversize
+     * refused -- BEFORE the message that references it is committed. Writing
+     * first meant an invalid send still left its bytes on disk, so a peer
+     * could fill the store with attachments belonging to messages that were
+     * never accepted, and nothing referenced them afterwards to clean up.
+     *
+     * @returns `{ id, name, bytes, mediaType }` — the id is the content hash.
+     */
+    digest(attachment) {
+      return describe(attachment).meta
+    },
+
     /**
      * @param content - a Buffer, or a base64 string from an MCP caller.
      * @returns `{ id, name, bytes, mediaType }` — the id is the content hash.
      */
-    put({ content, name, mediaType } = {}) {
-      const bytes = Buffer.isBuffer(content)
-        ? content
-        : Buffer.from(String(content ?? ''), 'base64')
-
-      if (bytes.length === 0) throw new Error('attachments: content is required')
-      if (bytes.length > MAX_BYTES) {
-        // Refused rather than truncated: half a diff is worse than none, and
-        // silently storing a partial file would corrupt what the reader gets.
-        throw new Error(
-          `attachments: ${bytes.length} bytes exceeds the ${MAX_BYTES}-byte limit; ` +
-          'send a summary and a path the recipient can open themselves'
-        )
-      }
-
-      const id = createHash('sha256').update(bytes).digest('hex')
+    put(attachment) {
+      const { bytes, meta } = describe(attachment)
       if (dir !== undefined) {
         mkdirSync(dir, { recursive: true })
-        const target = join(dir, id)
+        const target = join(dir, meta.id)
         if (!existsSync(target)) {
           // Temp+rename so a reader never sees a partially written blob, and
           // so two senders storing the same bytes cannot collide mid-write.
@@ -70,14 +100,7 @@ export function createAttachmentStore({ dir } = {}) {
           renameSync(temp, target)
         }
       }
-      return {
-        id,
-        name: safeName(name),
-        bytes: bytes.length,
-        // Recorded as a label only. Nothing here acts on it, so a lie costs
-        // the reader nothing but a wrong guess about how to display it.
-        mediaType: String(mediaType ?? 'application/octet-stream').slice(0, 100)
-      }
+      return meta
     },
 
     /**

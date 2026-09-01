@@ -112,7 +112,11 @@ export function registerCommands(commands, deps, identity = DEFAULT_IDENTITY) {
       const found = mailbox.search(query, { limit: 20 })
       if (found.length === 0) return ok(`Nothing matching ${JSON.stringify(query)}.`)
       const lines = found.map((m) => `#${m.seq} ${m.from} → ${m.to}: ${m.text.slice(0, 160)}`)
-      return ok([`${found.length} match(es)`, '', ...lines].join('\n'))
+      // The trust note belongs on EVERY surface that prints peer-written
+      // text, not only /mailbox. Search results are message bodies with the
+      // reassuring frame of a query the operator typed themselves, which if
+      // anything makes the reminder more necessary here, not less.
+      return ok([`${found.length} match(es)`, '', ...lines, '', TRUST_NOTE].join('\n'))
     }
   })
 

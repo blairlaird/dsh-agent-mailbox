@@ -37,6 +37,7 @@ import { createDeliveryHook } from './src/hook.js'
 import { startServer } from './src/server.js'
 import { TOOLS, dispatch, TRUST_NOTE } from './src/tools.js'
 import { registerCommands, DEFAULT_IDENTITY } from './src/commands.js'
+import { describeHome } from './src/home.js'
 
 export const name = 'dsh-agent-mailbox'
 
@@ -76,7 +77,16 @@ export function apply(ctx, config = {}) {
   const home = resolveHome(config)
   const file = join(home, 'mail.jsonl')
 
-  const mailbox = createMailbox({ file })
+  // signingSecret and maxRecords were ACCEPTED IN CONFIG AND DROPPED HERE, so
+  // the README's "HMAC message signing" and "retention / compaction" were
+  // claims about code that never ran: an operator could set a signing secret,
+  // see no error, and get an unsigned log. Passing them through is the whole
+  // fix; mailbox.integrity() is the read side, reported by GET /health.
+  const mailbox = createMailbox({
+    file,
+    signingSecret: config.signingSecret,
+    maxRecords: config.maxRecords
+  })
   const presence = createPresence({ dir: join(home, 'peers') })
   const attachments = createAttachmentStore({ dir: join(home, 'attachments') })
   const notifier = createNotifier({ file, mailbox })
@@ -102,7 +112,13 @@ export function apply(ctx, config = {}) {
     logger: ctx.logger
   })
 
-  const deps = { mailbox, presence, attachments, notifier, auth, hook }
+  // Say where the mailbox is, every time, and say loudly when that answer is
+  // container-relative -- two agents each launching the harness otherwise get
+  // two different mailboxes at the same nominal path and neither can tell.
+  const where = describeHome(home)
+  if (where.virtualized) ctx.logger?.error?.(`dsh-agent-mailbox: ${where.warning}`)
+
+  const deps = { mailbox, presence, attachments, notifier, auth, hook, home }
 
   // The doorbell holds an fs watcher; tie it to the plugin's life so nothing
   // outlives a reload.
@@ -133,7 +149,7 @@ export function apply(ctx, config = {}) {
     const port = config.port ?? 4470
     try {
       const server = await startServer(deps, { host, port })
-      ctx.logger?.info?.(`dsh-agent-mailbox: listening on http://${host}:${server.port} (mailbox at ${home})`)
+      ctx.logger?.info?.(`dsh-agent-mailbox: listening on http://${host}:${server.port} — mailbox at ${home}`)
       return () => server.close()
     } catch (error) {
       // A taken port or a refused bind must not take the harness down with

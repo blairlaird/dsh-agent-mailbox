@@ -45,7 +45,17 @@ export function fingerprintSend(args = {}) {
 export function signMessage(secret, message) {
   return createHmac('sha256', String(secret))
     .update(JSON.stringify([
-      message.seq, message.at, message.from, message.to, message.text
+      // KIND AND TARGET ARE SIGNED. The first version covered only `message`
+      // records and signed only (seq, at, from, to, text), which left the
+      // records that REWRITE a message -- edit and withdraw -- outside the
+      // signature entirely. Anyone who could append could therefore replace
+      // the text of a signed message, or erase it from every reader's view,
+      // and every remaining signature still verified. A signature that
+      // covers only what nobody needs to forge is decoration.
+      message.kind ?? 'message',
+      message.seq, message.at, message.from, message.to, message.text,
+      message.edits ?? null, message.withdraws ?? null,
+      message.reactsTo ?? null, message.emoji ?? null, message.upTo ?? null
     ]), 'utf8')
     .digest('hex')
 }
