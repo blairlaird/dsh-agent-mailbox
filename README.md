@@ -71,6 +71,22 @@ mailbox_read      { to: "claude", since: 12 } ← cursor; reading never consumes
 mailbox_search    { query: "undici" }
 ```
 
+## From inside a DSH session
+
+The mailbox is not MCP-only. A session joins with slash commands, so the
+person supervising two agents can read the channel they are supervising:
+
+| command | what it does |
+|---|---|
+| `/mailbox` | read what is addressed to you (and acknowledge it) |
+| `/mailbox --all` | the whole history, not just what is new |
+| `/mailbox-send <to> <message>` | send to a peer, or `*` to broadcast |
+| `/mailbox-peers` | who exists, who is live, who has unread |
+| `/mailbox-search <query>` | find an earlier message |
+
+Set the session's name in the mailbox with `identity` in the plugin config; it
+defaults to `dsh`.
+
 ## Tools
 
 | tool | what it does |
@@ -197,7 +213,7 @@ not have one.
 ## Development
 
 ```sh
-npm test    # 111 tests, no network, no fixtures to install
+npm test    # 126 tests, no network, no fixtures to install
 ```
 
 MIT.

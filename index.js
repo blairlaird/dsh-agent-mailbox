@@ -36,6 +36,7 @@ import { createAuth } from './src/auth.js'
 import { createDeliveryHook } from './src/hook.js'
 import { startServer } from './src/server.js'
 import { TOOLS, dispatch, TRUST_NOTE } from './src/tools.js'
+import { registerCommands, DEFAULT_IDENTITY } from './src/commands.js'
 
 export const name = 'dsh-agent-mailbox'
 
@@ -107,25 +108,22 @@ export function apply(ctx, config = {}) {
   // outlives a reload.
   ctx.effect(() => () => notifier.close())
 
-  // In-harness tools, so a DSH session is a peer like any other. Registered
-  // only when the host offers a tool registry — the MCP surface is the
-  // primary one and must not depend on this.
+  // Slash commands, so a DSH session is a participant like any external
+  // client -- and so the person supervising two agents can read the channel
+  // they are supervising. Without this the mailbox is MCP-only and invisible
+  // from inside the harness.
   //
-  // Read through a try/catch, NOT `ctx.tools?.`: Cordis throws
-  // "cannot get property \"tools\" without inject" on a service this plugin
-  // does not declare, and optional chaining does not catch a throwing getter.
-  // That took the whole harness down the first time this was installed.
-  const tools = optionalService(ctx, 'tools')
-  if (typeof tools?.register === 'function') {
-    ctx.effect(() => {
-      const disposers = TOOLS.map((tool) => tools.register({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-        handler: (args) => dispatch(deps, tool.name, args)
-      }))
-      return () => { for (const dispose of disposers) dispose?.() }
-    })
+  // Read through a try/catch, NOT `ctx.commands?.`: Cordis throws
+  // "cannot get property \"commands\" without inject" for a service this
+  // plugin does not declare, and optional chaining does not catch a throwing
+  // getter. That exact shape took the whole harness down once already.
+  //
+  // Declaring it in `inject` would be worse: a host without a command
+  // registry would refuse to load the plugin, when the MCP surface works
+  // perfectly well without one.
+  const commands = optionalService(ctx, 'commands')
+  if (typeof commands?.register === 'function') {
+    ctx.effect(() => registerCommands(commands, deps, config.identity ?? DEFAULT_IDENTITY))
   }
 
   // The loopback surface. This is the capability nothing else in the
