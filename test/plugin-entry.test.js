@@ -17,18 +17,81 @@ import { join } from 'node:path'
 
 import { apply, inject, name, TRUST_SECTION } from '../index.js'
 
-const fakeCtx = () => {
+/**
+ * A ctx that behaves like Cordis on the two points that matter: services are
+ * only reachable through a declaration, and ctx.inject() starts a child that
+ * waits for one.
+ */
+const fakeCtx = ({ provide = {} } = {}) => {
   const effects = []
-  return {
+  const injected = []
+  const ctx = {
     effects,
+    injected,
     logger: { info() {}, error() {} },
-    effect(fn) { effects.push(fn) }
+    effect(fn) { effects.push(fn) },
+    // "Read a service from the store without the inject requirement."
+    reflect: { get: (name) => provide[name] },
+    inject(names, callback) {
+      injected.push(names)
+      // Cordis runs the child only once EVERY name resolves; a host that
+      // never provides one leaves that child pending forever, which is
+      // exactly the behaviour this plugin relies on.
+      if (!names.every((n) => provide[n] !== undefined)) return
+      // Cordis runs an effect's callback IMMEDIATELY and keeps its return
+      // as the disposer -- a fake that only queues them would let a dead
+      // registration look registered, which is the bug being pinned.
+      const scoped = { ...ctx, ...provide, effect: (fn) => { effects.push(fn); return fn() } }
+      callback(scoped)
+    }
   }
+  return ctx
+}
+
+/** A command registry that records what was registered, like ctx.commands. */
+const fakeCommands = () => {
+  const registered = []
+  return { registered, register(spec) { registered.push(spec); return () => {} } }
 }
 
 test('inject is a flat array of service names', () => {
   assert.ok(Array.isArray(inject), 'the object form takes the harness down at boot')
   for (const entry of inject) assert.equal(typeof entry, 'string')
+})
+
+test('inject does not declare `commands`, so the plugin loads without one', () => {
+  // Declaring it here would make the whole plugin -- MCP server included --
+  // refuse to load on any host with no command registry. The commands are
+  // waited for in a CHILD fiber instead.
+  assert.ok(!inject.includes('commands'),
+    'a host without a command registry must still get the MCP surface')
+})
+
+test('the commands are registered through ctx.inject, not a bare read', (t) => {
+  // THE BUG THIS PINS. `try { ctx.commands } catch {}` never throws and never
+  // works: Cordis gates service access on the declaration, so the read is
+  // undefined every time and all four commands silently never register. That
+  // shipped, passed every test, and was only caught by typing /mailbox-peers
+  // into a live session and watching the model try to grep for it.
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mailbox-plugin-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const commands = fakeCommands()
+  const ctx = fakeCtx({ provide: { commands } })
+
+  apply(ctx, { home, port: 0 })
+
+  assert.deepEqual(ctx.injected, [['commands']], 'the wait must be on `commands`')
+  assert.deepEqual(commands.registered.map((c) => c.name).sort(),
+    ['mailbox', 'mailbox-peers', 'mailbox-search', 'mailbox-send'],
+    'all four commands must reach the registry')
+})
+
+test('a host that never provides commands still gets everything else', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mailbox-plugin-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const ctx = fakeCtx()               // provides nothing
+  assert.doesNotThrow(() => apply(ctx, { home, port: 0 }))
+  assert.ok(ctx.effects.length >= 2, 'the doorbell and the server still register')
 })
 
 test('the plugin exports what the loader needs', () => {

@@ -60,12 +60,17 @@ export const TRUST_SECTION =
  * `ctx.tools?.register` still throws. That took the whole harness down the
  * first time this plugin was installed.
  *
- * Declaring `tools` in `inject` would be worse: a host without a tool
- * registry would then refuse to load the plugin at all, when the MCP surface
- * works perfectly well without it.
+ * `ctx.reflect.get(name)` is the SUPPORTED read: Cordis documents it as
+ * "read a service from the store without the inject requirement". It returns
+ * undefined instead of throwing, so it needs no try/catch of its own -- the
+ * one here only guards a host that has no reflect service at all.
+ *
+ * NOTE what this is NOT good enough for: a service that is provided LATER
+ * than this plugin loads reads as absent here, permanently. For anything the
+ * plugin actually needs, use ctx.inject() -- see the commands wiring below.
  */
 function optionalService(ctx, name) {
-  try { return ctx?.[name] } catch { return undefined }
+  try { return ctx?.reflect?.get?.(name) } catch { return undefined }
 }
 
 /** Everything lives under one directory so it is trivial to inspect or delete. */
@@ -129,17 +134,40 @@ export function apply(ctx, config = {}) {
   // they are supervising. Without this the mailbox is MCP-only and invisible
   // from inside the harness.
   //
-  // Read through a try/catch, NOT `ctx.commands?.`: Cordis throws
-  // "cannot get property \"commands\" without inject" for a service this
-  // plugin does not declare, and optional chaining does not catch a throwing
-  // getter. That exact shape took the whole harness down once already.
+  // ctx.inject(), NOT a plain read, and NOT `commands` in this plugin's own
+  // `inject`. Each of the other three shapes is wrong in its own way, and two
+  // of them have already been shipped:
   //
-  // Declaring it in `inject` would be worse: a host without a command
-  // registry would refuse to load the plugin, when the MCP surface works
-  // perfectly well without one.
-  const commands = optionalService(ctx, 'commands')
-  if (typeof commands?.register === 'function') {
-    ctx.effect(() => registerCommands(commands, deps, config.identity ?? DEFAULT_IDENTITY))
+  //   ctx.commands              throws "cannot get property \"commands\"
+  //                             without inject" and takes the harness down.
+  //   try { ctx.commands }      never throws and never WORKS: Cordis gates
+  //                             service access on the declaration, so the
+  //                             read is undefined every time and the commands
+  //                             silently never register. Shipped, and only
+  //                             caught by typing /mailbox-peers into a live
+  //                             session and watching the model try to grep
+  //                             for it.
+  //   export const inject =     works here, and refuses to load the plugin at
+  //     ['commands']            all on a host with no command registry --
+  //                             losing the MCP surface, which needs nothing.
+  //
+  // ctx.inject() starts a CHILD fiber that waits for the service. On a host
+  // that provides commands, they register as soon as it appears -- load order
+  // stops mattering. On a host that never does, only the child stays pending
+  // and everything else here runs. That is the whole point.
+  const identity = config.identity ?? DEFAULT_IDENTITY
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['commands'], (scoped) => {
+      scoped.effect(() => registerCommands(scoped.commands, deps, identity))
+    })
+  } else {
+    // Not Cordis, or a host too old to have the registry mixin. Fall back to
+    // the direct read rather than skipping silently -- if the service happens
+    // to be there already, the commands still work.
+    const commands = optionalService(ctx, 'commands')
+    if (typeof commands?.register === 'function') {
+      ctx.effect(() => registerCommands(commands, deps, identity))
+    }
   }
 
   // The loopback surface. This is the capability nothing else in the

@@ -88,6 +88,9 @@ No build hook, no postinstall, no runtime dependencies.
 
 Set the session's name with `identity` in the plugin config (default `dsh`).
 
+All four are **verified in a live DSH session**, not only against a test
+double — see *Verified live* below.
+
 **There is no sidebar panel, and that is a limit of the host, not an omission.**
 DSH has no third-party sidebar slot. The nearest surface other plugins use is
 `conversation.session.header.actions` — where the background-job list lives —
@@ -219,6 +222,16 @@ peer-supplied `?port=` · `-32700` on a malformed body · notifications
 dispatched as well as acknowledged · SSE delivery with a junk `?since` ·
 health reporting the resolved home and the signature check · oversize bodies
 refused with 413.
+
+**Verified inside a live DSH session** (the part a test double cannot prove):
+all four slash commands appear in the harness's command autocomplete with
+their descriptions, and each one runs — `/mailbox-peers` lists peers with
+unread counts, `/mailbox-search` reports an honest miss, `/mailbox-send`
+returns `Sent #79 to claude.`, and `/mailbox` prints the messages **followed
+by the trust note**. The message that `/mailbox-send` wrote from the DSH
+session was then read back over `POST /mcp` by an external client — which is
+the whole capability this plugin exists for, and the one that 0 of the 23
+audited plugins had.
 
 Three of those checks failed on the first live run and **all three were bugs in
 the test, not the plugin** — a cursor that could never match, a wait that
