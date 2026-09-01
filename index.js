@@ -33,6 +33,7 @@ import { createMailbox, createPresence } from './src/mailbox.js'
 import { createAttachmentStore } from './src/attachments.js'
 import { createNotifier } from './src/notify.js'
 import { createAuth } from './src/auth.js'
+import { createDeliveryHook } from './src/hook.js'
 import { startServer } from './src/server.js'
 import { TOOLS, dispatch, TRUST_NOTE } from './src/tools.js'
 
@@ -86,7 +87,21 @@ export function apply(ctx, config = {}) {
     participants: config.participants ?? {}
   })
 
-  const deps = { mailbox, presence, attachments, notifier, auth }
+  // Wakes a turn-based client on delivery. mailbox_wait only serves callers
+  // that can PARK on an open request; most MCP clients only exist while
+  // answering their user, so without this a message between turns is stored
+  // and never read -- indistinguishable from broken.
+  //
+  // argv array, never a string, and content travels in the environment: a
+  // command string with the message interpolated would be a remote shell for
+  // anyone who can send a message.
+  const hook = createDeliveryHook({
+    command: config.notifyCommand,
+    cwd: config.notifyCwd,
+    logger: ctx.logger
+  })
+
+  const deps = { mailbox, presence, attachments, notifier, auth, hook }
 
   // The doorbell holds an fs watcher; tie it to the plugin's life so nothing
   // outlives a reload.

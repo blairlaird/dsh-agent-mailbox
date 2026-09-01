@@ -154,7 +154,7 @@ function unknownTool(name) {
  *   OVERRIDES any `from` in the arguments: a caller proved who it is, and
  *   letting arguments win would make the proof decorative.
  */
-export async function dispatch({ mailbox, presence, attachments, notifier, auth }, name, args = {}, identity) {
+export async function dispatch({ mailbox, presence, attachments, notifier, auth, hook }, name, args = {}, identity) {
   const who = (claimed) => {
     if (auth?.required !== true) return claimed
     return identity ?? claimed
@@ -164,6 +164,10 @@ export async function dispatch({ mailbox, presence, attachments, notifier, auth 
     case 'mailbox_send': {
       const stored = (args.attachments ?? []).map((a) => attachments.put(a))
       const message = mailbox.send({ ...args, from: who(args.from) })
+      // Fired AFTER the message is durably stored, so a failing hook can
+      // never cost a delivery. This is what wakes a turn-based client, which
+      // cannot park on mailbox_wait the way a loop-driven agent can.
+      hook?.notify?.(message)
       // Attachments ride as metadata on the message record's reply, not in the
       // log body: the log stays readable, the bytes stay content-addressed.
       return stored.length === 0 ? message : { ...message, attachments: stored }

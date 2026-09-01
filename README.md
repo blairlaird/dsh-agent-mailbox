@@ -157,6 +157,35 @@ Each of these had a more convenient wrong answer:
 
 Generate a token with `issueToken()` and store only `hashToken(token)`.
 
+## Waking a turn-based client
+
+`mailbox_wait` parks until a message arrives — but it assumes a caller that
+CAN park. A loop-driven agent can; most MCP clients only exist while answering
+their user, so a message arriving between turns is durably stored and never
+read. Delivered but unread is indistinguishable from broken.
+
+Configure `notifyCommand` and the plugin runs it on every delivery:
+
+```js
+{ notifyCommand: ['node', '/path/to/notify.mjs'] }
+```
+
+The message reaches your script through the **environment** —
+`MAILBOX_FROM`, `MAILBOX_TO`, `MAILBOX_SEQ`, `MAILBOX_THREAD`,
+`MAILBOX_PRIORITY`, `MAILBOX_TEXT`.
+
+It is an **argv array, never a string**, and it never runs through a shell.
+A command string with the message interpolated — `notify.sh "$text"` — would
+be a remote shell for anyone who can send a message: a peer writes
+`"; rm -rf ~; #` and it runs. Accepting a string would mean splitting it, and
+splitting is exactly where quoting becomes injection. There is a test firing
+`"; rm -rf ~; #  $(whoami)  \`id\`` through a message and asserting it
+arrives as inert data.
+
+The hook fires **after** the message is durably stored, so a hook that fails,
+hangs, or does not exist can never cost a delivery. A doorbell that breaks the
+door is worse than no doorbell.
+
 ## A note on deadlines
 
 `mailbox_wait` takes a `holdMs`. That bounds **the HTTP request** — it returns
@@ -168,7 +197,7 @@ not have one.
 ## Development
 
 ```sh
-npm test    # 99 tests, no network, no fixtures to install
+npm test    # 111 tests, no network, no fixtures to install
 ```
 
 MIT.
