@@ -30,8 +30,13 @@ test('with auth off, a caller is whoever it claims to be', () => {
   assert.deepEqual(auth.authenticate({ claimed: 'claude' }), { ok: true, identity: 'claude' })
 })
 
-test('with auth off, an unnamed caller is still refused', () => {
-  assert.equal(createAuth({ required: false }).authenticate({}).ok, false)
+test('with auth off, an unnamed caller is allowed through to the mailbox', () => {
+  // Authentication proves WHO, it does not decide whether a name is required.
+  // Enforcing one here refused mailbox_search and mailbox_peers, which need
+  // no identity at all; the mailbox rejects an empty `from` on its own.
+  const result = createAuth({ required: false }).authenticate({})
+  assert.equal(result.ok, true)
+  assert.equal(result.identity, undefined)
 })
 
 test('a valid token resolves to its participant', () => {

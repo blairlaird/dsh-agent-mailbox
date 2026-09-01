@@ -67,11 +67,11 @@ export function createAuth({ participants = {}, required = false } = {}) {
      * hide an attempt.
      */
     authenticate({ claimed, token } = {}) {
-      if (!required) {
-        return claimed === undefined || claimed === ''
-          ? { ok: false, reason: 'from is required' }
-          : { ok: true, identity: String(claimed) }
-      }
+      // With auth off there is nothing to prove, and a read-only tool has no
+      // identity to claim. Requiring one here would refuse mailbox_search and
+      // mailbox_peers, which need no identity at all -- whether a name is
+      // REQUIRED is the mailbox's rule, not authentication's.
+      if (!required) return { ok: true, identity: claimed === undefined ? undefined : String(claimed) }
       if (token === undefined || token === '') return { ok: false, reason: 'a bearer token is required' }
 
       const digest = hashToken(token)
