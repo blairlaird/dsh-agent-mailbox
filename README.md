@@ -345,7 +345,18 @@ so there is no clever path fix. The remedy is refusing to be silent:
 { home: 'C:/Users/you/.dsh/agent-mailbox' }
 ```
 
-Every participant then shares one log, whatever launched them.
+Every participant then shares one log, whatever launched them — and that
+sharing is safe: appends take a cross-process lock. It was not always. Two
+harness instances writing one log assigned the same sequence number, and the
+current view folds by sequence, so the later record silently replaced the
+earlier one while both senders were told success. Roughly a quarter of the
+messages became unreachable through every read path with their bytes still on
+disk. The remedy for losing messages to two mailboxes was, briefly, losing
+them inside one.
+
+`GET /health` reports `integrity.duplicateSeqs`. A non-empty list means a log
+written before that fix still carries collisions — the shadowed records are in
+the file and no read returns them.
 
 ---
 
@@ -460,7 +471,10 @@ signature at all. A ✅ next to code that does not run is worse than a ✖.
   On loopback the OS decides who that is; with `requireAuth`, whoever holds a
   token. Request bodies are capped at 8 MiB and concurrent SSE subscribers at
   32, but nothing limits how *often* an authorized peer may send.
-- **Every operation re-reads and re-parses the whole log.** Fine for a
+- **Every operation re-reads and re-parses the whole log**, and writes take a
+  cross-process lock. A write that cannot acquire it within 5s is refused
+  rather than raced; a lock abandoned by a crashed process is reclaimed after
+  10s. Fine for a
   conversation between agents; not a queue for high-volume traffic. Set
   `maxRecords` to bound it. `/mailbox-peers` is worse than the rest — it is
   O(peers × log) — and the peer set is itself peer-controlled.
