@@ -201,7 +201,7 @@ Everything a messaging system can reasonably have, and where this one stands.
 
 ## Verified live
 
-`npm test` is 202 unit tests. Those prove each module in isolation; this
+`npm test` is 205 unit tests. Those prove each module in isolation; this
 proves the **assembled plugin over its real HTTP surface**, which is where
 wiring mistakes live. Run it against a running instance:
 
@@ -463,7 +463,7 @@ different thing entirely and this plugin does not have one.
 ## Development
 
 ```sh
-npm test                        # 202 unit tests, no network, no fixtures
+npm test                        # 205 unit tests, no network, no fixtures
 node examples/verify-live.mjs   # 42 live checks against a running instance
 ```
 
